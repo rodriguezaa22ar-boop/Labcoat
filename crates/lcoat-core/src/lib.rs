@@ -15,6 +15,7 @@
 //! | --- | --- | --- |
 //! | [`metadata`] | 0 | done: scanner ported from `receipt.sh`, type-gated |
 //! | [`tier`] | 0 | done |
+//! | [`chain`] | 0 | done: ledger event-hash definition frozen with jq-computed vectors; `verify` names the broken event |
 //! | `root` | 1 | planned: `LabRoot::from_env`, unset is an error |
 //! | `ledger` | 1 | planned: read v1, append-only handle, chain fields (phase 3) |
 //! | `verify` | 1 | planned: packet verifiers, trust chain, evidence verify |
@@ -26,5 +27,6 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+pub mod chain;
 pub mod metadata;
 pub mod tier;

@@ -112,11 +112,12 @@ Fallback list if a hand-written piece proves costly (adopt with a one-line reaso
 ## Conformance
 
 1. **Pinned oracles:** shell `23ba2d2`; Lite `v0.1.4` (`f4039fb`). Fixtures copied read-only into `fixtures/golden/`.
+1. **Tamper verdicts recorded first.** `conformance/tamper.sh record` builds a closed operation with the shell build, applies eight cases and writes the shell's verdicts to `fixtures/tamper/*.expect`; `tamper.sh check <bin>` diffs another implementation against them. Done in phase 0; Lite matches on all eight. Notably the shell passes an edited artifact (all verifiers `verified`), which is the gap format 1.1 closes.
 2. **Golden hashes first:** ledger file hash (18 events), head event and closeout prefix hashes, artifact hash, all three receipts' `event_hash`/`receipt_hash`. Done in phase 0.
 3. **Three-way scenario:** one frozen-clock scenario through shell, Go and Rust; normalized diff; every verifier on every root (9 combinations, 27 runs).
 4. **Tamper fixtures, two tiers:** Lite's five must fail identically in all three; two Rust-only (rewritten middle event with file hash recomputed; artifact edited after `evidence bundle`) must fail only in Rust.
 5. **Property tests** over canonical JSON, envfile round trip, scanner.
-6. **Fuzzing** of envfile, NDJSON, packet anchor and nmap XML parsers.
+6. **Fuzzing** of envfile, NDJSON, packet anchor and nmap XML parsers. `cargo-fuzz` needs nightly, so it runs as a separate CI job on nightly; local builds and every other job stay on stable.
 7. **Compile-fail tests** (`trybuild`) for the type-level claims.
 8. **Field validation:** re-run the Fedora lab assessment with Lab Coat; Lite verifies the result; the case study gets a third column.
 
@@ -125,7 +126,7 @@ Fallback list if a hand-written piece proves costly (adopt with a one-line reaso
 | Weeks | Phase | Deliverable | Exit check |
 | --- | --- | --- | --- |
 | 0 | Prepare (done) | Workspace, CI, fixtures, canonical JSON + hashing, `MetadataOnly`, this blueprint | `cargo test` reproduces the golden ledger, artifact and receipt hashes |
-| 1–2 | Read and verify v1 | envfile, NDJSON, ledger reader, packet verifiers, `receipt verify/replay`, `op trust-chain`, `evidence verify` | identical verdicts to shell and Lite on every golden/tamper fixture; `receipt verify --json` byte-identical |
+| 1–2 | Read and verify v1 | envfile, NDJSON, ledger reader, packet verifiers, `receipt verify/replay`, `op trust-chain`, `evidence verify`; **tamper cases first, verifiers second** | `tamper.sh check target/debug/lcoat LCOAT_ROOT` prints TAMPER OK; identical verdicts on every golden fixture; `receipt verify --json` byte-identical |
 | 3–4 | Write v1-compatible | targets, operations, scope, evidence, findings, report, packets, `adapter run`; typestate; `MetadataOnly` on every writer | three-way cross-check clean in all nine directions; compile-fail suite passes |
 | 5–6 | Format 1.1 | ledger chain, `evidence bundle`, finding lifecycle, vantage, `ledger chain-verify`, `doctor`; musl + macOS builds | shell and Lite still verify Rust output; Rust-only tamper fixtures fail only in Rust; Mac scan records vantage |
 | 7–8 | Trust plane and release | approval plane, `v1 status` split, receipt signatures, release packets; field re-run; 0.2.0 | field operation verified by all three builds; `v0.2.0` tagged with SHA256SUMS |
@@ -135,15 +136,19 @@ Schedule risk sits in weeks 3–4. If the typestate fights the format, the forma
 ## Open decisions
 
 - [x] **Repo:** `rodriguezaa22ar-boop/Labcoat-`, Apache-2.0.
-- [ ] **Binary name and version.** Default: `lcoat`, 0.2.0 onward; Lite retired when 0.2.0 ships.
+- [x] **Binary name and version.** `lcoat`, 0.2.0 onward. Lite is retired when 0.2.0 ships; `GO-project` stays pinned at v0.1.4 as the oracle, security fixes only.
 - [ ] **Public/private split.** Default: one public repo, adapters behind a feature flag.
 - [ ] **Edition and MSRV.** Default: 2024 / 1.89, stable only.
 - [ ] **Signature scheme.** Default: ed25519, keys in `$LCOAT_ROOT/keys/`. Decide in phase 4.
 - [x] **Nix.** Dropped (see Dependencies).
 - [ ] **Schema IDs.** Default: keep `atlas.*` through 0.x.
 - [ ] **Second vantage.** Default: the Mac build over Tailscale.
-- [ ] **Ledger event hash definition.** Default: SHA-256 over canonical event without the two chain fields, concatenated with previous `event_hash` hex, newline-terminated. Fix before phase 3.
+- [x] **Ledger event hash definition.** Frozen in `lcoat-core::chain`: `sha256(canonical(event without prev_hash/event_hash) + "\n" + prev_hash_hex_or_empty + "\n")`, first `prev_hash` null. Two test vectors computed independently with `jq -cS` and `sha256sum` pin it.
+
+## Threat model
+
+See `docs/THREAT_MODEL.md`: what a verified operation proves (records unaltered, order, scope checked before every run, metadata only, receipt pins an archive), what it does not (completeness, tool correctness, operator honesty, authorization, firewall behaviour from a self-scan), the adversaries considered, and the known weak points in priority order.
 
 ## What is prepared today
 
-Phase-0 scaffold: builds with zero dependencies, clippy-clean under `-D warnings`, 34 tests pass including the day-0 exit check. See the README for the crate table and build commands, `fixtures/README.md` for the pinned values, and `conformance/cross_check.sh` for the three-way harness (stages not yet implemented report NOT YET). To pick up phase 1: `lcoat-format::envfile` and `ndjson` against `fixtures/golden/learning-op-001/`, then the packet anchor parser, with `GO-project/internal/{envfile,ndjson,packet}` as the reference.
+Phase-0 scaffold: builds with zero dependencies, clippy-clean under `-D warnings`, 40 tests pass including the day-0 exit check and the frozen chain vectors. `fixtures/tamper/` holds the shell oracle's verdicts for eight tamper cases, and Lite matches all of them. See the README for the crate table and build commands, `fixtures/README.md` for the pinned values, and `conformance/cross_check.sh` for the three-way harness (stages not yet implemented report NOT YET). To pick up phase 1: `lcoat-format::envfile` and `ndjson` against `fixtures/golden/learning-op-001/`, then the packet anchor parser, with `GO-project/internal/{envfile,ndjson,packet}` as the reference.

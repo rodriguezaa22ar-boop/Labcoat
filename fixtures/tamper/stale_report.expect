@@ -1,0 +1,7 @@
+# Edit the report after the handoff was generated
+op verify: attention-required
+op audit-verify: verified
+op archive-verify: attention-required
+op trust-chain: attention-required
+receipt verify r2: ok
+receipt replay: ok

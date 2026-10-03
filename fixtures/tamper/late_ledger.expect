@@ -1,0 +1,7 @@
+# Append a disallowed ledger event after closeout
+op verify: attention-required
+op audit-verify: attention-required
+op archive-verify: attention-required
+op trust-chain: attention-required
+receipt verify r2: ok
+receipt replay: ok

@@ -1,0 +1,7 @@
+# Edit an evidence artifact after evidence add
+op verify: verified
+op audit-verify: verified
+op archive-verify: verified
+op trust-chain: attention-required
+receipt verify r2: ok
+receipt replay: ok

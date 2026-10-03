@@ -1,0 +1,7 @@
+# Hand-edit a receipt's prev_hash
+op verify: verified
+op audit-verify: verified
+op archive-verify: verified
+op trust-chain: attention-required
+receipt verify r2: error
+receipt replay: error

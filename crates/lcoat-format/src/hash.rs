@@ -19,6 +19,11 @@ impl Sha256Hex {
         Self(sha256::to_hex(&sha256::digest(bytes)))
     }
 
+    /// Wrap a finished digest.
+    pub fn of_bytes_digest(digest: [u8; 32]) -> Self {
+        Self(sha256::to_hex(&digest))
+    }
+
     /// Hash a file's contents, streaming.
     pub fn of_file(path: &Path) -> io::Result<Self> {
         let mut f = std::fs::File::open(path)?;

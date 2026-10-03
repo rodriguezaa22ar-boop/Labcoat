@@ -18,5 +18,9 @@ Known values the tests pin:
 - `learning-op-001/evidence/ev_20261002T054004Z/recon-output.txt`: `fa0def3c96e0f68e7fe02036187b47485ab9aabe60919692770bae396c1267ad`
 - receipt chain: boundary `80b04f94…` → packet `cb4509fc…` → replay `bb79b7ba…` (event hashes)
 
-Tamper fixtures (phase 1) will live in `tamper/`, one directory per case,
-each with an `EXPECT` file naming the verifier that must object and how.
+`tamper/*.expect` holds the shell oracle's verdicts for eight tamper cases,
+recorded by `conformance/tamper.sh record`. The first line describes the
+case; the rest are verdict lines another implementation must reproduce
+(`tamper.sh check <bin> <rootvar>`). Lite v0.1.4 matches all eight. Note the
+`edit_artifact` case: every shell verifier says `verified`, which is the gap
+format 1.1 closes with the evidence manifest.

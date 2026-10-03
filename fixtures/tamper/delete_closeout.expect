@@ -1,0 +1,7 @@
+# Delete the closeout manifest
+op verify: error
+op audit-verify: attention-required
+op archive-verify: attention-required
+op trust-chain: attention-required
+receipt verify r2: ok
+receipt replay: ok

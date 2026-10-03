@@ -1,0 +1,7 @@
+# Rewrite a middle ledger event in place (whole-file hash changes; v1.1 chain must name the event)
+op verify: attention-required
+op audit-verify: attention-required
+op archive-verify: attention-required
+op trust-chain: attention-required
+receipt verify r2: ok
+receipt replay: ok
