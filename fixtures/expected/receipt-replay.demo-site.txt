@@ -1,0 +1,8 @@
+receipt replay: ok
+receipts: 3
+ledger binding: ok prev_hash -> event_hash
+chain_head_event_hash: bb79b7ba13bfc8b657a532c9a07cd3eb9c27020514c903e9cda4385f6e5012eb
+chain_head_receipt_hash: f0ba44315536c8397b4a42bc1a5b18bf3992b13752b83e465bed0850a1ea6c38
+metadata-only boundary: ok
+This replay verifies receipt hashes and provided-order prev_hash linkage only.
+It does not prove external artifact availability, human intent, legal compliance, artifact correctness, authorization, or production readiness.

@@ -1,0 +1,20 @@
+Closeout Verification
+------------------------------------------------------------
+Operation: learning-op-001
+Manifest: /home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/sessions/learning-op-001/closeout/learning-op-001-closeout.md
+------------------------------------------------------------
+ARTIFACT             STATUS         PATH
+Latest Report        verified       /home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/reports/learning-op-001-report.md
+Evidence Manifest    unverifiable   - (not recorded)
+Latest Handoff       verified       /home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/sessions/learning-op-001/handoff/learning-op-001-handoff.md
+Operation Ledger     verified       /home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/sessions/learning-op-001/ledger.ndjson (events=18 anchored_events=16 later_allowed_events=2)
+Operation Env        verified       /home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/sessions/learning-op-001/session.env
+Scope Snapshot       verified       /home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/sessions/learning-op-001/scope.snapshot.env
+Evidence Index       verified       /home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/sessions/learning-op-001/evidence.ndjson
+Finding Index        verified       /home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/sessions/learning-op-001/findings.ndjson
+Validation Index     unverifiable   - (not recorded)
+------------------------------------------------------------
+Verification Status: verified
+Verified Anchors: 7
+Verification Gaps: 2
+Verification Problems: 0

@@ -1,0 +1,11 @@
+Audit Packet Verification
+------------------------------------------------------------
+Operation: learning-op-001
+Packet: /home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/sessions/learning-op-001/audit/learning-op-001-audit.md
+------------------------------------------------------------
+ARTIFACT             STATUS         DETAIL
+Operation Ledger     verified       ledger=/home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/sessions/learning-op-001/ledger.ndjson events=18 anchored_events=17 later_archive_events=1
+Closeout Manifest    verified       expected_sha=bff38f33333f9eae776c0440c5fce75e8baf7ffb0d9e6fc107ed075010153534 actual_sha=bff38f33333f9eae776c0440c5fce75e8baf7ffb0d9e6fc107ed075010153534 manifest=/home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/sessions/learning-op-001/closeout/learning-op-001-closeout.md
+------------------------------------------------------------
+Verification Status: verified
+Verification Problems: 0

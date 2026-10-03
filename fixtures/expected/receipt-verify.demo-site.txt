@@ -1,0 +1,3 @@
+receipt: ok
+This receipt validates as a metadata-only proof record.
+It does not prove external artifact availability, human intent, legal compliance, or artifact correctness.

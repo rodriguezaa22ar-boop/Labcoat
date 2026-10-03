@@ -1,0 +1,51 @@
+Operation Trust Chain
+------------------------------------------------------------
+Operation: learning-op-001
+Operation Status: closed
+Target: demo-learning-node
+Trust Chain Status: attention-required
+Next Trust Step: Resolve, accept, or retest unresolved findings before closure.
+------------------------------------------------------------
+Readiness
+Close Readiness: attention-required
+Evidence Records: 1
+Open Findings: 2
+Accepted Risks: 0
+Expired Accepted Risks: 0
+Pending Validation: 0
+V1 Readiness: not ready required_not_ready=1 blocked=0 warnings=1
+------------------------------------------------------------
+Freshness
+Report: current path=/home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/reports/learning-op-001-report.md
+Evidence Bundle: missing detail=none
+Handoff: current path=/home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/sessions/learning-op-001/handoff/learning-op-001-handoff.md
+Closeout: current path=/home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/sessions/learning-op-001/closeout/learning-op-001-closeout.md
+Accepted Risk Review Packet: missing path=none
+Audit Packet: current path=/home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/sessions/learning-op-001/audit/learning-op-001-audit.md
+Archive Packet: current path=/home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/sessions/learning-op-001/archive/learning-op-001-archive.md
+------------------------------------------------------------
+Verification
+Closeout: verified manifest=/home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/sessions/learning-op-001/closeout/learning-op-001-closeout.md problems=0
+Accepted Risk Review Packet: not-required packet=-
+Audit Packet: verified packet=/home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/sessions/learning-op-001/audit/learning-op-001-audit.md
+Archive Packet: verified packet=/home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/sessions/learning-op-001/archive/learning-op-001-archive.md
+------------------------------------------------------------
+Business Flow Evidence
+Status: not-recorded
+Operation Links: 0 path=/home/claude/labcoat/fixtures/golden/learning-op-001/business_flows.ndjson
+Evidence Links: 0 path=/home/claude/labcoat/fixtures/golden/learning-op-001/flow_evidence.ndjson
+Finding Links: 0 path=/home/claude/labcoat/fixtures/golden/learning-op-001/flow_findings.ndjson
+Validation Links: 0 path=/home/claude/labcoat/fixtures/golden/learning-op-001/flow_validation.ndjson
+Approval Links: 0 path=/home/claude/labcoat/fixtures/golden/learning-op-001/flow_approvals.ndjson
+Retention Links: 0 path=/home/claude/labcoat/fixtures/golden/learning-op-001/flow_retention.ndjson
+Markdown Packets: 0 path=/home/claude/labcoat/fixtures/golden/learning-op-001/flow_packets
+JSON Packets: 0 path=/home/claude/labcoat/fixtures/golden/learning-op-001/flow_packets_json
+Assurance Total: 0
+Assurance Current: 0
+Assurance Attention Required: 0
+Assurance Blocked: 0
+Assurance Not Recorded: 1
+------------------------------------------------------------
+Ledger
+Operation Ledger: /home/claude/labcoat/fixtures/golden/learning-op-001/ledger.ndjson events=18 sha256=ba36a56433f5a4153a1d430bb4632bfe7bdcc989adbf5438ba1ea667758f0c6f
+Latest Ledger Event: 2026-10-02T05:42:19Z archive.packet.generated

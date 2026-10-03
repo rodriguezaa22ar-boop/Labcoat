@@ -1,0 +1,42 @@
+Operation Readiness
+------------------------------------------------------------
+Operation: learning-op-001
+Operation Status: closed
+Target: demo-learning-node
+Evidence Records: 1
+Findings: 2
+Open Findings: 2
+Accepted Risks: 0
+Expired Accepted Risks: 0
+Validation Plans: 0
+Pending Validation: 0
+Latest Report: 2026-10-02T05:41:59Z /home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/reports/learning-op-001-report.md
+Report Freshness: current
+Latest State Change: 2026-10-02T05:40:07Z finding.recorded
+Evidence Bundle: none generated yet
+Bundle Freshness: missing
+Latest Evidence Change: 2026-10-02T05:40:04Z artifact.created
+Latest Handoff: 2026-10-02T05:42:02Z /home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/sessions/learning-op-001/handoff/learning-op-001-handoff.md
+Handoff Freshness: current
+Latest Closeout: 2026-10-02T05:42:10Z /home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/sessions/learning-op-001/closeout/learning-op-001-closeout.md
+Closeout Freshness: current
+Latest Accepted Risk Review Packet: none generated yet
+Accepted Risk Review Packet Freshness: missing
+Latest Accepted Risk Change: 2026-10-02T05:40:07Z finding.recorded
+Latest Audit Packet: 2026-10-02T05:42:14Z /home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/sessions/learning-op-001/audit/learning-op-001-audit.md
+Audit Packet Freshness: current
+Latest Archive Packet: 2026-10-02T05:42:19Z /home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/sessions/learning-op-001/archive/learning-op-001-archive.md
+Archive Packet Freshness: current
+Latest Ledger Event: 2026-10-02T05:42:19Z archive.packet.generated
+Close Readiness: attention-required
+Next Step: Resolve, accept, or retest unresolved findings before closure.
+------------------------------------------------------------
+Open Findings
+finding_20261002T054007Z low      observed   open       Apache web server with multiple active modules
+finding_20261002T054006Z low      observed   open       SSH service on non-standard configuration
+------------------------------------------------------------
+Expired Accepted Risks
+note: no expired accepted risks detected
+------------------------------------------------------------
+Pending Validation
+note: no planned or approved validation is waiting

@@ -1,0 +1,18 @@
+Archive Packet Verification
+------------------------------------------------------------
+Operation: learning-op-001
+Packet: /home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/sessions/learning-op-001/archive/learning-op-001-archive.md
+------------------------------------------------------------
+ARTIFACT               STATUS         PATH
+Latest Report          verified       /home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/reports/learning-op-001-report.md
+Evidence Manifest      not-recorded   -
+Latest Handoff         verified       /home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/sessions/learning-op-001/handoff/learning-op-001-handoff.md
+Latest Closeout        verified       /home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/sessions/learning-op-001/closeout/learning-op-001-closeout.md
+Accepted Risk Review Packet not-recorded   none
+Latest Audit Packet    verified       /home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/sessions/learning-op-001/audit/learning-op-001-audit.md
+Operation Ledger       verified       /home/claude/rodriguezaa22ar-boop/atlas-trust-infrastructure/sessions/learning-op-001/ledger.ndjson (events=18)
+------------------------------------------------------------
+Verification Status: verified
+Verified Anchors: 5
+Verification Gaps: 2
+Verification Problems: 0

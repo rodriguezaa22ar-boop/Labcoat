@@ -16,17 +16,33 @@
 //! | [`metadata`] | 0 | done: scanner ported from `receipt.sh`, type-gated |
 //! | [`tier`] | 0 | done |
 //! | [`chain`] | 0 | done: ledger event-hash definition frozen with jq-computed vectors; `verify` names the broken event |
-//! | `root` | 1 | planned: `LabRoot::from_env`, unset is an error |
-//! | `ledger` | 1 | planned: read v1, append-only handle, chain fields (phase 3) |
-//! | `verify` | 1 | planned: packet verifiers, trust chain, evidence verify |
-//! | `receipt` | 1 | planned: verify, replay, create, sign (phase 4) |
-//! | `scope`, `operation` | 2 | planned: profiles, preflight, typestate lifecycle |
-//! | `evidence`, `findings`, `packet` | 2 | planned: writers take `MetadataOnly` only |
+//! | [`root`] | 1 | done: `LabRoot::from_env`, unset is an error, nothing here creates directories |
+//! | [`ledger`] | 1 | done: reader, `verify_operation_ledger`, prefix hash, append-only `Ledger` handle |
+//! | [`scope`] | 1 | done: profiles, snapshot, `preflight` with the Tier ceiling ahead of the approval gate |
+//! | [`operation`] | 1 | done: loading side; the typestate lifecycle is phase 2 |
+//! | [`evidence`], [`findings`], [`validation`] | 1 | done: readers, orderings, `verify_artifacts`; writers are phase 2 |
+//! | [`readiness`] | 1 | done: byte-identical to the shell build's block |
+//! | [`packet`] | 1 | done: closeout/audit/archive verifiers and the trust chain, shell-exact rows; renderers are phase 2 |
+//! | [`receipt`] | 1 | done: verify, replay, create (`jq -S` form); signatures are phase 4 |
 //! | `approval` | 4 | planned: Tier 3 grants |
 
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 pub mod chain;
+pub mod error;
+pub mod evidence;
+pub mod findings;
+pub mod ledger;
 pub mod metadata;
+pub mod operation;
+pub mod packet;
+pub mod readiness;
+pub mod receipt;
+pub mod root;
+pub mod scope;
 pub mod tier;
+pub mod validation;
+
+pub use error::{Error, Result};
+pub use root::LabRoot;
