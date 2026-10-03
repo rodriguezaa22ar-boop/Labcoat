@@ -37,6 +37,53 @@ pub fn compact(v: &Value) -> Vec<u8> {
     out
 }
 
+/// Render `v` as `jq -S .` prints it: sorted keys, two-space indentation,
+/// `"key": value`, empty containers as `[]` and `{}`, and a trailing
+/// newline. This is how the shell build writes receipt files.
+pub fn pretty_sorted(v: &Value) -> Vec<u8> {
+    let mut out = Vec::new();
+    write_pretty(&mut out, v, 0);
+    out.push(b'\n');
+    out
+}
+
+fn write_pretty(out: &mut Vec<u8>, v: &Value, depth: usize) {
+    let indent = |out: &mut Vec<u8>, d: usize| out.extend(std::iter::repeat_n(b' ', d * 2));
+    match v {
+        Value::Array(items) if !items.is_empty() => {
+            out.extend_from_slice(b"[\n");
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.extend_from_slice(b",\n");
+                }
+                indent(out, depth + 1);
+                write_pretty(out, item, depth + 1);
+            }
+            out.push(b'\n');
+            indent(out, depth);
+            out.push(b']');
+        }
+        Value::Object(map) if !map.is_empty() => {
+            let mut entries: Vec<(&str, &Value)> = map.iter().collect();
+            entries.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+            out.extend_from_slice(b"{\n");
+            for (i, (k, val)) in entries.into_iter().enumerate() {
+                if i > 0 {
+                    out.extend_from_slice(b",\n");
+                }
+                indent(out, depth + 1);
+                write_string(out, k);
+                out.extend_from_slice(b": ");
+                write_pretty(out, val, depth + 1);
+            }
+            out.push(b'\n');
+            indent(out, depth);
+            out.push(b'}');
+        }
+        other => write_value_with(out, other, true),
+    }
+}
+
 fn write_value(out: &mut Vec<u8>, v: &Value) {
     write_value_with(out, v, true)
 }

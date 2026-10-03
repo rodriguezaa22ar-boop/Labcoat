@@ -90,3 +90,73 @@ fn demo_site_receipts_chain_in_order() {
     assert_eq!(get(&b, "prev_hash"), get(&a, "event_hash"));
     assert_eq!(get(&c, "prev_hash"), get(&b, "event_hash"));
 }
+
+/// Every env record the shell build wrote must parse and re-render to the
+/// identical bytes: that is what lets the two implementations share files.
+#[test]
+fn env_records_round_trip_byte_identically() {
+    for rel in [
+        "learning-op-001/session.env",
+        "learning-op-001/scope.snapshot.env",
+        "targets/demo-learning-node.env",
+    ] {
+        let path = golden(rel);
+        let bytes = std::fs::read(&path).unwrap();
+        let rec = lcoat_format::envfile::parse(&bytes).unwrap_or_else(|e| panic!("{rel}: {e}"));
+        assert_eq!(rec.to_bytes(), bytes, "{rel} did not round-trip");
+    }
+    // Profiles are hand-written with double quotes, not `printf %q`; they
+    // must parse, and their values must survive a re-render.
+    let bytes = std::fs::read(golden("profiles/htb-starting-point.env")).unwrap();
+    let rec = lcoat_format::envfile::parse(&bytes).unwrap();
+    assert_eq!(rec.get("PROFILE_NAME"), "htb-starting-point");
+    assert_eq!(
+        rec.get("ALLOWED_CAPABILITIES"),
+        "read-only passive-recon active-recon safe-validation"
+    );
+    let again = lcoat_format::envfile::parse(&rec.to_bytes()).unwrap();
+    assert_eq!(again, rec);
+}
+
+/// Every NDJSON index parses, and re-encoding each line compactly in
+/// insertion order reproduces the file (the shell writes with `jq -cn`).
+#[test]
+fn ndjson_indexes_round_trip_byte_identically() {
+    for rel in [
+        "learning-op-001/ledger.ndjson",
+        "learning-op-001/evidence.ndjson",
+        "learning-op-001/findings.ndjson",
+    ] {
+        let path = golden(rel);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let recs = lcoat_format::ndjson::read_file(&path).unwrap_or_else(|e| panic!("{rel}: {e}"));
+        let mut out = Vec::new();
+        for r in &recs {
+            out.extend(lcoat_format::canonical::compact(&Value::Object(r.clone())));
+            out.push(b'\n');
+        }
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            text,
+            "{rel} did not round-trip"
+        );
+    }
+}
+
+#[test]
+fn pretty_sorted_reproduces_shell_written_receipts() {
+    // The shell build writes receipts with `jq -S .`; re-serializing the
+    // golden receipts must give back the file bytes exactly.
+    for name in ["demo-site-boundary", "demo-site-packet", "demo-site-replay"] {
+        let path = golden(&format!("demo-site-receipts/{name}.json"));
+        let bytes = std::fs::read(&path).unwrap();
+        let v = lcoat_format::json::Value::parse(std::str::from_utf8(&bytes).unwrap()).unwrap();
+        assert_eq!(lcoat_format::canonical::pretty_sorted(&v), bytes, "{name}");
+    }
+    let v =
+        lcoat_format::json::Value::parse(r#"{"b":[],"a":{},"c":[1,{"x":"y"}],"d":"s"}"#).unwrap();
+    assert_eq!(
+        String::from_utf8(lcoat_format::canonical::pretty_sorted(&v)).unwrap(),
+        "{\n  \"a\": {},\n  \"b\": [],\n  \"c\": [\n    1,\n    {\n      \"x\": \"y\"\n    }\n  ],\n  \"d\": \"s\"\n}\n"
+    );
+}
