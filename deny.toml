@@ -23,6 +23,9 @@ confidence-threshold = 0.9
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Workspace path dependencies carry no version requirement; the crates are
+# not published, so that is not a wildcard anyone can resolve differently.
+allow-wildcard-paths = true
 # Nothing here may execute a shell; the runner uses argv only.
 deny = [{ name = "shell-words" }, { name = "subprocess" }]
 
