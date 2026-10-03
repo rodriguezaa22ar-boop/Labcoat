@@ -1,0 +1,26 @@
+# Synthetic Learning Operation Recon Output
+## Target: demo-learning-node (192.168.100.50)
+## Date: 2026-10-02
+## Tool: Atlas learning operation
+
+### Port Scan Summary
+- Port 22: SSH (OpenSSH 7.4) - OPEN
+- Port 80: HTTP (Apache/2.4.6) - OPEN
+- Port 443: HTTPS (Apache/2.4.6) - OPEN
+- Port 3306: MySQL (5.7.20) - FILTERED
+
+### HTTP Service Fingerprint
+Server: Apache/2.4.6 (CentOS)
+Modules: mod_ssl, mod_proxy, mod_rewrite detected
+
+### Observations
+1. SSH service running on standard port
+2. Web server responding to HTTP and HTTPS
+3. Database port filtered but responding to SYN
+4. No obvious default credentials in banner grabbing
+5. Service versions appear patched for known CVEs
+
+### Evidence References
+- Scope: in-scope (authorized HTB learning target)
+- Operator: learning operation
+- Metadata-only: all commands logged, no data extraction

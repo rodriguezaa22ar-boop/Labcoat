@@ -1,0 +1,15 @@
+# Build output
+/target/
+/dist/
+
+# Local lab roots and session state (never commit real operation data)
+/sessions/
+/reports/
+/state/
+/targets/
+*.receipt.json
+!fixtures/**/*.json
+
+# Fuzz corpora grow large
+/fuzz/artifacts/
+/fuzz/corpus/

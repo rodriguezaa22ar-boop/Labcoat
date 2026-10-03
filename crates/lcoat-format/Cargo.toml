@@ -1,0 +1,14 @@
+[package]
+name = "lcoat-format"
+description = "On-disk formats shared by the Atlas shell build, Lab Coat Lite and Lab Coat: strict JSON, canonical (jq -cS) form, SHA-256, NDJSON, bash-quoted env files and IDs. Standard library only."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -1,0 +1,22 @@
+# Fixtures
+
+`golden/` is copied from Lab Coat Lite (`GO-project/testdata/golden`, v0.1.4)
+and is read-only. It is the inherited specification: real state written by
+the Atlas shell build at commit `23ba2d2`, with hashes recorded inside it.
+
+| Path | What it is | Used by |
+| --- | --- | --- |
+| `golden/learning-op-001/` | A complete closed operation (18 ledger events, one artifact, four packets) | ledger/evidence/packet verifiers |
+| `golden/demo-site-receipts/` | A three-receipt chain with recorded `event_hash`/`receipt_hash` | canonical JSON, receipt verify/replay |
+| `golden/nmap/sample.xml` | nmap XML output | adapter parser |
+| `golden/profiles/` | scope profiles (`htb-starting-point`, `default`) | scope preflight |
+| `golden/targets/`, `golden/reports/` | target record and report from the same run | envfile, report rendering |
+
+Known values the tests pin:
+
+- `learning-op-001/ledger.ndjson`: 18 events, `sha256=ba36a56433f5a4153a1d430bb4632bfe7bdcc989adbf5438ba1ea667758f0c6f`
+- `learning-op-001/evidence/ev_20261002T054004Z/recon-output.txt`: `fa0def3c96e0f68e7fe02036187b47485ab9aabe60919692770bae396c1267ad`
+- receipt chain: boundary `80b04f94…` → packet `cb4509fc…` → replay `bb79b7ba…` (event hashes)
+
+Tamper fixtures (phase 1) will live in `tamper/`, one directory per case,
+each with an `EXPECT` file naming the verifier that must object and how.

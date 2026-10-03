@@ -1,0 +1,32 @@
+{
+  "action": "demo.receipt.packet.documented",
+  "actor": "atlas-demo-operator",
+  "approval_refs": [
+    "demo-boundary:synthetic-only"
+  ],
+  "artifact_refs": [],
+  "event_hash": "cb4509fcd3ca04b1c84ddd6e9ab65e796622b85a5d0ced435a82b60785239a84",
+  "evidence_refs": [
+    "docs/schemas/receipt-canonicalization.v1.md",
+    "docs/schemas/receipt-replay.v1.md"
+  ],
+  "known_limitations": [
+    "Receipt packet documents reviewer replay commands only; it does not add a server, web UI, backend, or hidden state.",
+    "Canonicalization and replay prove local receipt hash consistency and provided-order linkage only."
+  ],
+  "metadata_only": true,
+  "prev_hash": "80b04f94b1094430da9f24b7896f1dfdd0e9083fa7f98021d12c5529aa3a17fd",
+  "raw_artifacts_embedded": false,
+  "receipt_hash": "7aad50433be26ec26d5e3776523ce5a6f3b8afd1b9bfbc7375c281b19c593a70",
+  "receipt_id": "receipt-demo-site-packet",
+  "schema_version": "atlas.receipt.v1",
+  "subject": {
+    "ref": "docs/demo/DEMO_RECEIPT_PACKET.md",
+    "type": "demo-receipt-packet"
+  },
+  "timestamp": "2026-05-20T00:02:00Z",
+  "verifier": {
+    "name": "atlas receipt verify",
+    "schema": "schemas/atlas.receipt.v1.schema.json"
+  }
+}

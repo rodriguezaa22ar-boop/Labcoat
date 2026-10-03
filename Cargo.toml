@@ -1,0 +1,39 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/lcoat-format",
+    "crates/lcoat-core",
+    "crates/lcoat-adapters",
+    "crates/lcoat",
+]
+
+[workspace.package]
+version = "0.2.0-dev"
+edition = "2024"
+# 1.89 for std::fs::File::lock (append-only ledger under an exclusive lock
+# without a dependency). Edition 2024 needs 1.85.
+rust-version = "1.89"
+license = "Apache-2.0"
+repository = "https://github.com/rodriguezaa22ar-boop/Labcoat-"
+authors = ["Anthony Paniagua Chavez"]
+
+# Dependency policy (docs/BLUEPRINT.md, "Dependencies"): the library crates
+# (`lcoat-format`, `lcoat-core`, `lcoat-adapters`) use the standard library
+# only, as Lab Coat Lite did. SHA-256, strict JSON, the forbidden-content
+# scanner and RFC 3339 timestamps are implemented here and tested against the
+# shell build's fixtures. Any future dependency goes in this table with a
+# one-line reason, and `cargo deny` (deny.toml) must pass.
+[workspace.dependencies]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+unwrap_used = "warn"
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1

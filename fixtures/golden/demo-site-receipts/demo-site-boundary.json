@@ -1,0 +1,34 @@
+{
+  "action": "demo.site.boundary.recorded",
+  "actor": "atlas-demo-operator",
+  "approval_refs": [],
+  "artifact_refs": [
+    {
+      "path": "docs/demo/DEMO_OPERATION.md",
+      "sha256": "b622850ddc466d95433d995127e857e452a99f66a8d4fe546e44209360e04b90"
+    }
+  ],
+  "event_hash": "80b04f94b1094430da9f24b7896f1dfdd0e9083fa7f98021d12c5529aa3a17fd",
+  "evidence_refs": [
+    "docs/demo/DEMO_OPERATION.md"
+  ],
+  "known_limitations": [
+    "Synthetic demo-site receipt; no live site, backend, network collector, or execution behavior is verified.",
+    "Metadata-only proof record; raw artifacts and sensitive contents are not embedded."
+  ],
+  "metadata_only": true,
+  "prev_hash": null,
+  "raw_artifacts_embedded": false,
+  "receipt_hash": "6a1ac02bb4506dabb18766a4db342bd7ea03da81c73a2a623182f037a454d186",
+  "receipt_id": "receipt-demo-site-boundary",
+  "schema_version": "atlas.receipt.v1",
+  "subject": {
+    "ref": "public-demo-site:synthetic",
+    "type": "demo-site"
+  },
+  "timestamp": "2026-05-20T00:01:00Z",
+  "verifier": {
+    "name": "atlas receipt verify",
+    "schema": "schemas/atlas.receipt.v1.schema.json"
+  }
+}

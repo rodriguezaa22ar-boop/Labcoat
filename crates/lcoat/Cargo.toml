@@ -1,0 +1,26 @@
+[package]
+name = "lcoat"
+description = "Lab Coat: a scope-enforcing, metadata-only control plane for authorized security assessment."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "lcoat"
+path = "src/main.rs"
+
+[features]
+default = ["adapters"]
+# Without this feature the binary can verify records but cannot run tools.
+adapters = ["dep:lcoat-adapters"]
+
+[dependencies]
+lcoat-format = { path = "../lcoat-format" }
+lcoat-core = { path = "../lcoat-core" }
+lcoat-adapters = { path = "../lcoat-adapters", optional = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "lcoat-core"
+description = "Lab Coat trust logic: scope, ledger, evidence, findings, packets, verifiers and receipts. Never spawns a process. Standard library only."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+lcoat-format = { path = "../lcoat-format" }
+
+[lints]
+workspace = true

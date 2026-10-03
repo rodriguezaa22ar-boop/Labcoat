@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<nmaprun scanner="nmap" args="nmap -sV -oX - 10.10.10.5">
+<host>
+<address addr="10.10.10.5" addrtype="ipv4"/>
+<ports>
+<port protocol="tcp" portid="22"><state state="open"/><service name="ssh" product="OpenSSH"/></port>
+<port protocol="tcp" portid="80"><state state="open"/><service name="http" product="Apache httpd"/></port>
+<port protocol="tcp" portid="443"><state state="closed"/><service name="https"/></port>
+</ports>
+</host>
+</nmaprun>

@@ -1,0 +1,15 @@
+[package]
+name = "lcoat-adapters"
+description = "Tool adapters for Lab Coat (nmap, script). The only crate that executes anything, and it only executes against a scoped target."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+lcoat-core = { path = "../lcoat-core" }
+
+[lints]
+workspace = true

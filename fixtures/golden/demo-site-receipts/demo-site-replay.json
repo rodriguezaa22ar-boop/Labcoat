@@ -1,0 +1,32 @@
+{
+  "action": "demo.receipt.replay.reviewed",
+  "actor": "atlas-demo-reviewer",
+  "approval_refs": [
+    "reviewer-command:atlas-receipt-replay-json"
+  ],
+  "artifact_refs": [],
+  "event_hash": "bb79b7ba13bfc8b657a532c9a07cd3eb9c27020514c903e9cda4385f6e5012eb",
+  "evidence_refs": [
+    "examples/receipt/demo-site/README.md",
+    "docs/demo/DEMO_RECEIPT_PACKET.md"
+  ],
+  "known_limitations": [
+    "Replay checks the synthetic receipt files in caller-provided order only.",
+    "Replay does not prove external artifact availability, human intent, legal compliance, artifact correctness, authorization, or production readiness."
+  ],
+  "metadata_only": true,
+  "prev_hash": "cb4509fcd3ca04b1c84ddd6e9ab65e796622b85a5d0ced435a82b60785239a84",
+  "raw_artifacts_embedded": false,
+  "receipt_hash": "f0ba44315536c8397b4a42bc1a5b18bf3992b13752b83e465bed0850a1ea6c38",
+  "receipt_id": "receipt-demo-site-replay",
+  "schema_version": "atlas.receipt.v1",
+  "subject": {
+    "ref": "examples/receipt/demo-site",
+    "type": "receipt-replay"
+  },
+  "timestamp": "2026-05-20T00:03:00Z",
+  "verifier": {
+    "name": "atlas receipt verify",
+    "schema": "schemas/atlas.receipt.v1.schema.json"
+  }
+}
