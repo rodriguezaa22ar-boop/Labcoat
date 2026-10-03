@@ -135,7 +135,7 @@ Schedule risk sits in weeks 3–4. If the typestate fights the format, the forma
 
 ## Open decisions
 
-- [x] **Repo:** `rodriguezaa22ar-boop/Labcoat-`, Apache-2.0.
+- [x] **Repo:** `rodriguezaa22ar-boop/labcoat`, Apache-2.0.
 - [x] **Binary name and version.** `lcoat`, 0.2.0 onward. Lite is retired when 0.2.0 ships; `GO-project` stays pinned at v0.1.4 as the oracle, security fixes only.
 - [ ] **Public/private split.** Default: one public repo, adapters behind a feature flag.
 - [ ] **Edition and MSRV.** Default: 2024 / 1.89, stable only.

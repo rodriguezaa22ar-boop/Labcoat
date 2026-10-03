@@ -14,7 +14,7 @@ edition = "2024"
 # without a dependency). Edition 2024 needs 1.85.
 rust-version = "1.89"
 license = "Apache-2.0"
-repository = "https://github.com/rodriguezaa22ar-boop/Labcoat-"
+repository = "https://github.com/rodriguezaa22ar-boop/labcoat"
 authors = ["Anthony Paniagua Chavez"]
 
 # Dependency policy (docs/BLUEPRINT.md, "Dependencies"): the library crates
