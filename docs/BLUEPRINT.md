@@ -111,7 +111,7 @@ Fallback list if a hand-written piece proves costly (adopt with a one-line reaso
 
 ## Conformance
 
-1. **Pinned oracles:** shell `23ba2d2`; Lite `v0.1.4` (`f4039fb`). Fixtures copied read-only into `fixtures/golden/`.
+1. **Pinned oracles:** shell `23ba2d2`; Lite `v0.1.4` (`f4039fb`). Fixtures copied read-only into `fixtures/golden/`. **The shell build is the oracle; Lite is the second opinion.** Where the two disagree on presentation (they never disagreed on a verdict), Lab Coat follows the shell: see "Read-only conformance" below.
 1. **Tamper verdicts recorded first.** `conformance/tamper.sh record` builds a closed operation with the shell build, applies eight cases and writes the shell's verdicts to `fixtures/tamper/*.expect`; `tamper.sh check <bin>` diffs another implementation against them. Done in phase 0; Lite matches on all eight. Notably the shell passes an edited artifact (all verifiers `verified`), which is the gap format 1.1 closes.
 2. **Golden hashes first:** ledger file hash (18 events), head event and closeout prefix hashes, artifact hash, all three receipts' `event_hash`/`receipt_hash`. Done in phase 0.
 3. **Three-way scenario:** one frozen-clock scenario through shell, Go and Rust; normalized diff; every verifier on every root (9 combinations, 27 runs).
@@ -121,12 +121,31 @@ Fallback list if a hand-written piece proves costly (adopt with a one-line reaso
 7. **Compile-fail tests** (`trybuild`) for the type-level claims.
 8. **Field validation:** re-run the Fedora lab assessment with Lab Coat; Lite verifies the result; the case study gets a third column.
 
+### Read-only conformance (phase 1 result)
+
+`conformance/readonly_diff.sh` builds one closed operation with the shell build under the frozen clock and runs every phase-1 command through the shell, Lite and Lab Coat, diffing the outputs byte for byte. Lab Coat matches the shell on all 18 commands. Lite differs from the shell on six of them, which phase 1 found and the shell settles:
+
+| Command | Lite's simplification | Lab Coat follows the shell |
+| --- | --- | --- |
+| `op verify` | `Packet:` label, no `ARTIFACT STATUS PATH` header, no `disallowed_later_events=` in a changed-ledger row | `Manifest:`, header row, full detail |
+| `op audit-verify` | three-column rows, `Verified Anchors`/`Gaps` footer | `ledger=… events=… later_archive_events=…` and `expected_sha=… actual_sha=… manifest=…` rows; status and problems only |
+| `op archive-verify` | labels padded to 20, `changed` without `actual=` | 22-column labels, `expected=… actual=…` |
+| `op trust-chain` | no Freshness block, no expired-risk count, no review-packet line, no latest-ledger-event line | the shell's layout minus the Business Flow Evidence block (no flows here) plus the `Evidence Artifacts` re-hash line |
+| `receipt replay --json` | eight top-level fields | the shell's full object (`ledger_binding`, `chain_checkpoint`, `chain[]`, `metadata_boundary`, `known_limitations`) |
+| `receipt create` | compact canonical JSON | `jq -S .` form (pretty, sorted), which is how every shell-written receipt on disk looks |
+
+Normalized before the diff, by design: the `V1 Readiness` line (the shell evaluates its own toolchain pillars; Lab Coat says it does not), the current-chain wording (`Trust chain is current.` vs `Metadata trust chain is current.`), the Business Flow Evidence block, the Evidence Artifacts line, and the clock-dependent fields of `ledger checkpoint`. Every build replays every build's receipts: receipt hashes cover the canonical form, so the serialization difference is cosmetic.
+
+Trust-chain status itself keeps Lite's rule rather than the shell's: the shell also requires its v1 toolchain pillars to be `ready` before saying `current`; Lab Coat does not ship those pillars and does not pretend to evaluate them. This is the one verdict-level difference from the shell, and it is announced on the `V1 Readiness` line of every trust-chain report.
+
+Operation readiness, ledger verify/checkpoint and receipt verify were already identical in all three.
+
 ## Eight-week plan
 
 | Weeks | Phase | Deliverable | Exit check |
 | --- | --- | --- | --- |
 | 0 | Prepare (done) | Workspace, CI, fixtures, canonical JSON + hashing, `MetadataOnly`, this blueprint | `cargo test` reproduces the golden ledger, artifact and receipt hashes |
-| 1–2 | Read and verify v1 | envfile, NDJSON, ledger reader, packet verifiers, `receipt verify/replay`, `op trust-chain`, `evidence verify`; **tamper cases first, verifiers second** | `tamper.sh check target/debug/lcoat LCOAT_ROOT` prints TAMPER OK; identical verdicts on every golden fixture; `receipt verify --json` byte-identical |
+| 1–2 | Read and verify v1 (done) | envfile, NDJSON, ledger reader, packet verifiers, `receipt verify/replay/create`, `op trust-chain`, `evidence verify`; **tamper cases first, verifiers second** | `tamper.sh check target/debug/lcoat LCOAT_ROOT` prints TAMPER OK; `readonly_diff.sh` prints READONLY OK (18 commands byte-identical to the shell); golden tests pin the shell's recorded output |
 | 3–4 | Write v1-compatible | targets, operations, scope, evidence, findings, report, packets, `adapter run`; typestate; `MetadataOnly` on every writer | three-way cross-check clean in all nine directions; compile-fail suite passes |
 | 5–6 | Format 1.1 | ledger chain, `evidence bundle`, finding lifecycle, vantage, `ledger chain-verify`, `doctor`; musl + macOS builds | shell and Lite still verify Rust output; Rust-only tamper fixtures fail only in Rust; Mac scan records vantage |
 | 7–8 | Trust plane and release | approval plane, `v1 status` split, receipt signatures, release packets; field re-run; 0.2.0 | field operation verified by all three builds; `v0.2.0` tagged with SHA256SUMS |
@@ -151,4 +170,6 @@ See `docs/THREAT_MODEL.md`: what a verified operation proves (records unaltered,
 
 ## What is prepared today
 
-Phase-0 scaffold: builds with zero dependencies, clippy-clean under `-D warnings`, 40 tests pass including the day-0 exit check and the frozen chain vectors. `fixtures/tamper/` holds the shell oracle's verdicts for eight tamper cases, and Lite matches all of them. See the README for the crate table and build commands, `fixtures/README.md` for the pinned values, and `conformance/cross_check.sh` for the three-way harness (stages not yet implemented report NOT YET). To pick up phase 1: `lcoat-format::envfile` and `ndjson` against `fixtures/golden/learning-op-001/`, then the packet anchor parser, with `GO-project/internal/{envfile,ndjson,packet}` as the reference.
+Phases 0 and 1 are done: zero dependencies, clippy-clean under `-D warnings`, 98 tests. `lcoat-format` reads and writes every v1 file byte-identically (env records, NDJSON, canonical and `jq -S` JSON, timestamps, IDs). `lcoat-core` loads roots, targets, operations, scope snapshots, ledgers, evidence, findings and validation plans; computes readiness; verifies closeout, audit and archive packets, the trust chain, evidence artifacts and receipts; creates and replays receipts. The `lcoat` binary ships the read-only command surface (`op list|readiness|verify|audit-verify|archive-verify|trust-chain`, `scope status`, `evidence list|verify`, `finding list`, `ledger verify|checkpoint`, `receipt create|verify|replay`, `hash`, `scan`) and refuses the write-side verbs with a pointer to Lite until phase 2. Two behaviours already differ from Lite on purpose: an unset `LCOAT_ROOT` is an error, and no read-only command creates a directory.
+
+Exit checks, all passing against the shell build at `23ba2d2`: `conformance/tamper.sh check` (eight tamper cases, identical verdicts), `conformance/readonly_diff.sh` (18 commands byte-identical after the documented normalizations), and the golden tests under `crates/*/tests/golden.rs`, whose expected outputs in `fixtures/expected/` were recorded from the shell. To pick up phase 2: the writers (`target add`, `op start/resume/close`, `evidence add`, `finding add`, report and packets, `adapter run`) as the `Operation<Active>` typestate, with `GO-project/internal/{operation,evidence,findings,report,packet,adapter}` as the reference and `cross_check.sh` stage 2 as the exit check.

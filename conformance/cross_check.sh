@@ -24,10 +24,9 @@ export LCOAT_NOW="${LCOAT_NOW:-2026-10-02T07:40:00Z}"
 
 fail=0
 notyet=0
-has() { "$RS" "$@" --help >/dev/null 2>&1 || "$RS" "$@" >/dev/null 2>&1; }
 
 echo "== stage 0: golden hashes (cargo test) =="
-( cd "$HERE" && cargo test --workspace --quiet 2>&1 | tail -1 ) || fail=1
+( cd "$HERE" && out="$(cargo test --workspace 2>&1)" && echo "  $(echo "$out" | grep -c 'test result: ok') suites ok, $(echo "$out" | grep -oE '^test result: ok\. [0-9]+' | awk '{s+=$4} END {print s}') tests" ) || fail=1
 
 echo "== build the three implementations =="
 RS="$(mktemp -d)/lcoat"; ( cd "$HERE" && cargo build --quiet -p lcoat && cp target/debug/lcoat "$RS" )
@@ -54,22 +53,16 @@ exec /usr/bin/date "$@"
 SHIM
 chmod +x "$shim/date"; export PATH="$shim:$PATH"
 
-echo "== stage 1: Rust verifiers on golden fixtures =="
-if "$RS" op verify --help >/dev/null 2>&1; then
-  G="$HERE/fixtures/golden"
-  for v in verify audit-verify archive-verify; do
-    s=$(LCOAT_ROOT="$G" "$RS" op "$v" learning-op-001 2>&1 | awk -F': ' '$1=="Verification Status"{print $2}')
-    echo "  rust op $v -> $s"; [ "$s" = verified ] || fail=1
-  done
-  for r in boundary packet replay; do
-    "$RS" receipt verify "$G/demo-site-receipts/demo-site-$r.json" >/dev/null && echo "  rust receipt verify $r -> ok" || { echo "  rust receipt verify $r -> FAIL"; fail=1; }
-  done
+echo "== stage 1: read-only conformance (tamper verdicts + byte-identical output) =="
+if "$RS" help 2>/dev/null | grep -q "^  lcoat op verify"; then
+  ( cd "$HERE" && ATLAS_REPO="$ATLAS_REPO" conformance/tamper.sh check "$RS" LCOAT_ROOT 2>&1 | tail -1 ) || fail=1
+  ( cd "$HERE" && ATLAS_REPO="$ATLAS_REPO" GO_PROJECT="$GO_PROJECT" conformance/readonly_diff.sh "$RS" 2>&1 | tail -2 ) || fail=1
 else
-  echo "  NOT YET (phase 1): op verify / receipt verify not implemented in Rust"; notyet=1
+  echo "  NOT YET (phase 1): read-only commands not implemented in Rust"; notyet=1
 fi
 
 echo "== stage 2: three-way scenario =="
-if "$RS" op start --help >/dev/null 2>&1; then
+if "$RS" help 2>/dev/null | grep -q "^  lcoat op start"; then
   roots=(); names=(sh go rs)
   for n in "${names[@]}"; do r="$(mktemp -d)"; roots+=("$r"); cp -r "$ATLAS_REPO/lib" "$ATLAS_REPO/tools" "$ATLAS_REPO/bin" "$r/"; printf 'nmap scan output\nPORT 22 open ssh\n' >"$r/recon.txt"; done
   scenario() { # VAR bin root
