@@ -209,7 +209,11 @@ fn dispatch(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
             Ok(())
         }
         "version" | "--version" | "-V" => {
-            ctx.line(&format!("lcoat {}", env!("CARGO_PKG_VERSION")));
+            ctx.line(&format!(
+                "lcoat {} (commit {})",
+                env!("CARGO_PKG_VERSION"),
+                env!("LCOAT_BUILD_COMMIT")
+            ));
             Ok(())
         }
         "hash" => tools::hash(ctx, rest),

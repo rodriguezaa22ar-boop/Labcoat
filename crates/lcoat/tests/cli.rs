@@ -11,13 +11,23 @@ fn fixture(rel: &str) -> String {
     format!("{}/../../fixtures/golden/{rel}", env!("CARGO_MANIFEST_DIR"))
 }
 
+/// Field run 1: two builds of 0.2.0-dev (before and after `finding
+/// review-packet`) were indistinguishable. The version line names the
+/// commit the binary was built from.
 #[test]
-fn version_prints_crate_version() {
+fn version_prints_crate_version_and_commit() {
     let out = lcoat().arg("version").output().unwrap();
     assert!(out.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout),
-        format!("lcoat {}\n", env!("CARGO_PKG_VERSION"))
+    let text = String::from_utf8_lossy(&out.stdout);
+    let prefix = format!("lcoat {} (commit ", env!("CARGO_PKG_VERSION"));
+    let commit = text
+        .strip_prefix(&prefix)
+        .and_then(|r| r.strip_suffix(")\n"))
+        .unwrap_or_else(|| panic!("{text}"));
+    let hex = commit.trim_end_matches("-dirty");
+    assert!(
+        hex == "unknown" || (hex.len() >= 7 && hex.bytes().all(|b| b.is_ascii_hexdigit())),
+        "{text}"
     );
 }
 
