@@ -120,7 +120,9 @@ fn run_adapter(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
     for w in &out.warnings {
         ctx.line(&format!("warning: {}", w.message));
     }
-    if out.proposed.is_empty() && !out.warnings.is_empty() {
+    if out.timed_out {
+        ctx.note("this run was stopped at its timeout: whatever nmap had not finished was not tested, so missing findings are not evidence of closed ports; rerun with a longer --timeout");
+    } else if out.proposed.is_empty() && !out.warnings.is_empty() {
         ctx.note(
             "no proposed findings, and see the warning above: this run did not test the target",
         );

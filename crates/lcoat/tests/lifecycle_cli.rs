@@ -636,3 +636,50 @@ fn undeclared_target_cannot_start_an_operation() {
     }
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Field run 1: a full-port nmap scan hit the 10-minute default timeout and
+/// the run ended with the plain "no proposed findings" note. A timed-out
+/// run now says it did not test what it did not reach.
+#[test]
+fn a_timed_out_run_says_it_is_incomplete() {
+    if !cfg!(feature = "adapters") {
+        return;
+    }
+    let root = fresh("timeout");
+    ok(&lcoat(
+        &root,
+        &[
+            "target",
+            "add",
+            "box",
+            "127.0.0.1",
+            "--scope-status",
+            "in-scope",
+        ],
+    ));
+    ok(&lcoat(&root, &["op", "start", "t", "box"]));
+    let out = lcoat(
+        &root,
+        &[
+            "adapter",
+            "run",
+            "script",
+            "box",
+            "--timeout",
+            "1",
+            "--tier",
+            "1",
+            "--",
+            "/bin/sleep",
+            "5",
+        ],
+    );
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(all.contains("stopped at its timeout"), "{all}");
+    assert!(!all.contains("confirm findings manually"), "{all}");
+    let _ = std::fs::remove_dir_all(&root);
+}
