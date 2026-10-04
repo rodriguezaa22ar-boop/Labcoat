@@ -353,6 +353,28 @@ impl ScopedTarget {
 }
 
 impl Snapshot {
+    /// An all-empty snapshot, for rendering a profile's action lists.
+    pub fn empty() -> Self {
+        Self {
+            profile: String::new(),
+            profile_summary: String::new(),
+            target: String::new(),
+            target_address: String::new(),
+            target_label: String::new(),
+            target_scope_status: String::new(),
+            target_criticality: String::new(),
+            target_tags: String::new(),
+            target_owner: String::new(),
+            text: String::new(),
+            allowed: String::new(),
+            blocked: String::new(),
+            allowed_actions: String::new(),
+            out_of_scope_actions: String::new(),
+            recommended_workflows: String::new(),
+            validation_lanes: String::new(),
+        }
+    }
+
     /// `atlas_scope_target_matches`: name, address or label.
     pub fn target_matches(&self, target: &str) -> bool {
         target == self.target

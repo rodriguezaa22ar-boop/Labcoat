@@ -300,10 +300,3 @@ fn receipt_create_writes_the_shell_form_and_validates() {
     assert!(stdout(&out).starts_with("receipt: ok\n"));
     let _ = std::fs::remove_dir_all(&dir);
 }
-
-#[test]
-fn write_side_commands_say_what_is_missing() {
-    let out = golden_cmd(&["op", "start", "x", "y"]);
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("phase 2"));
-}

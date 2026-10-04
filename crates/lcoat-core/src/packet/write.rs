@@ -40,13 +40,52 @@ use super::trustchain::{
 };
 use super::{ledger_event_count, sha_for_file};
 
-/// A written packet: its path and the hash of what was written.
+/// A packet that exists on disk: its path and the hash of its bytes. The
+/// fields are private: a `Written` comes from writing a packet here or from
+/// [`latest`], which looks the latest recorded packet up in the ledger, so
+/// `audit(&closed, &closeout, ..)` cannot be satisfied with a made-up path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Written {
+    path: PathBuf,
+    sha256: String,
+}
+
+impl Written {
     /// Absolute path.
-    pub path: PathBuf,
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// sha256 of the file.
-    pub sha256: String,
+    pub fn sha256(&self) -> &str {
+        &self.sha256
+    }
+}
+
+/// The latest packet of `kind` (`handoff`, `closeout`, `audit`, `archive`)
+/// recorded in the ledger, re-hashed from disk. Refuses when none was
+/// recorded or the file is gone, naming the command that makes one.
+pub fn latest<S: State>(op: &Operation<S>, kind: &str) -> Result<Written> {
+    let path = super::latest_in_ledger(op, kind)?;
+    if path.is_empty() {
+        let verb = match kind {
+            "closeout" => "op closeout",
+            "audit" => "op audit-packet",
+            "archive" => "op archive-packet",
+            _ => "op handoff",
+        };
+        fail!(
+            "no {kind} packet recorded for operation '{}'; run 'lcoat {verb}' first",
+            op.slug
+        );
+    }
+    if !lcoat_format::fsutil::file_exists(Path::new(&path)) {
+        fail!("recorded {kind} packet is missing: {path}");
+    }
+    Ok(Written {
+        path: PathBuf::from(&path),
+        sha256: sha_for_file(&path),
+    })
 }
 
 fn count_line(label: &str, n: usize) -> String {

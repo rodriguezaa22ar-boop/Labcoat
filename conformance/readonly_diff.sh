@@ -71,6 +71,7 @@ L="$ROOT/sessions/full-op/ledger.ndjson"
 #    Lab Coat "Metadata trust chain is current." (it certifies metadata only).
 #  - Business Flow Evidence: a shell-only subsystem; its block is dropped.
 #  - Evidence Artifacts: the Lite/Lab Coat re-hash line the shell lacks.
+#  - Ledger Chain: Lab Coat's format 1.1 chain status line.
 #  - ledger checkpoint: timestamp and checkpoint id depend on the clock/file.
 norm() {
   awk '
@@ -78,6 +79,7 @@ norm() {
     skip && /^-{60}$/ { skip=0; next }
     skip { next }
     /^Evidence Artifacts: / { next }
+    /^Ledger Chain: / { next }
     { print }
   ' | sed -E \
     -e 's/^(V1 Readiness: ).*/\1<implementation-specific>/' \

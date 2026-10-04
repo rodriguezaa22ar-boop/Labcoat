@@ -200,7 +200,7 @@ fn full_lifecycle_verifies_and_tampering_is_caught() {
     let closeout = packet::closeout(&closed, "").unwrap();
     let audit = packet::audit(&closed, &closeout, "").unwrap();
     let archive = packet::archive(&closed, &audit, "").unwrap();
-    let text = std::fs::read_to_string(&closeout.path).unwrap();
+    let text = std::fs::read_to_string(closeout.path()).unwrap();
     assert!(
         text.contains("- Evidence manifest: `"),
         "manifest slot filled: {text}"
@@ -212,22 +212,22 @@ fn full_lifecycle_verifies_and_tampering_is_caught() {
     assert!(text.contains("- Latest handoff: `"));
     assert!(text.contains(&format!(
         "sha256={} rel=sessions/full-op/handoff/full-op-handoff.md",
-        handoff.sha256
+        handoff.sha256()
     )));
 
     // Every verifier passes with zero problems.
     for (name, res) in [
         (
             "closeout",
-            packet::closeout_verify(&closed, &closeout.path.display().to_string()).unwrap(),
+            packet::closeout_verify(&closed, &closeout.path().display().to_string()).unwrap(),
         ),
         (
             "audit",
-            packet::audit_verify(&closed, &audit.path.display().to_string()).unwrap(),
+            packet::audit_verify(&closed, &audit.path().display().to_string()).unwrap(),
         ),
         (
             "archive",
-            packet::archive_verify(&closed, &archive.path.display().to_string()).unwrap(),
+            packet::archive_verify(&closed, &archive.path().display().to_string()).unwrap(),
         ),
     ] {
         assert_eq!(
@@ -294,7 +294,7 @@ fn full_lifecycle_verifies_and_tampering_is_caught() {
             ..Default::default()
         })
         .unwrap();
-    let res = packet::closeout_verify(&reloaded, &closeout.path.display().to_string()).unwrap();
+    let res = packet::closeout_verify(&reloaded, &closeout.path().display().to_string()).unwrap();
     assert_eq!(res.status, "attention-required");
     assert!(
         res.rows

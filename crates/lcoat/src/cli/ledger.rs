@@ -18,8 +18,60 @@ pub fn run(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
     match verb.as_str() {
         "verify" => verify(ctx, rest),
         "checkpoint" => checkpoint(ctx, rest),
+        "chain-verify" => chain_verify(ctx, rest),
         other => Err(fail(format!("unknown ledger command: {other}"))),
     }
+}
+
+/// `ledger chain-verify [operation] [--json]`: walk the format 1.1 event
+/// chain of an operation's ledger and name the first broken event. A v1
+/// ledger is reported as `unchained`, a Lite-started one as `partial`.
+fn chain_verify(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
+    use lcoat_core::chain::{self, ChainStatus};
+    let json = args.iter().any(|a| a == "--json");
+    let names: Vec<String> = args.iter().filter(|a| *a != "--json").cloned().collect();
+    let root = super::root()?;
+    let op =
+        lcoat_core::operation::Operation::load_named_or_active(&root, super::first_name(&names))?;
+    let objects = ledger::read_objects(&op.ledger_file())?;
+    let status = chain::verify(&objects);
+    let (word, ok) = match &status {
+        ChainStatus::Verified => ("verified", true),
+        ChainStatus::Unchained => ("unchained", true),
+        ChainStatus::Partial { .. } => ("partial", true),
+        ChainStatus::Broken { .. } => ("broken", false),
+    };
+    if json {
+        let mut o = Object::new();
+        o.insert("schema_version", s("lcoat.ledger_chain_verify.v1"));
+        o.insert("operation", s(&op.slug));
+        o.insert("ledger", s(&op.ledger_file().display().to_string()));
+        o.insert("events", Value::Number(objects.len().to_string()));
+        o.insert("status", s(word));
+        o.insert("detail", s(&super::op::chain_word(&status)));
+        if let ChainStatus::Broken { index, reason } = &status {
+            o.insert("broken_event", Value::Number((index + 1).to_string()));
+            o.insert("reason", s(reason));
+        }
+        if let ChainStatus::Partial { first_chained } = &status {
+            o.insert(
+                "first_chained_event",
+                Value::Number((first_chained + 1).to_string()),
+            );
+        }
+        emit(ctx, o);
+    } else {
+        ctx.heading("Ledger Chain Verification");
+        ctx.rule();
+        ctx.kv("Operation", &op.name);
+        ctx.kv("Ledger", &op.ledger_file().display().to_string());
+        ctx.kv("Events", &objects.len().to_string());
+        ctx.kv("Chain Status", &super::op::chain_word(&status));
+        if let ChainStatus::Unchained | ChainStatus::Partial { .. } = status {
+            ctx.note("events without chain fields were written by the shell build or Lite; they are covered by the whole-file hash the packets anchor");
+        }
+    }
+    if ok { Ok(()) } else { Err(CliError::Exit(1)) }
 }
 
 /// The ledger file to read: a path, or stdin spooled to a temp file.

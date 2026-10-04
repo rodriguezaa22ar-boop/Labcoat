@@ -2,22 +2,29 @@
 //! carries no dependencies. Output reproduces the shell build's plain text
 //! so the three implementations can be diffed line for line.
 //!
-//! Phase 1 ships the read-only side: everything here takes `&LabRoot` and
-//! writes nothing under the lab root. Commands that need no root
-//! (`version`, `hash`, `scan`, `receipt *`, `ledger *`) never resolve one,
-//! and no read-only command ever creates a directory.
+//! Read-only commands take `&LabRoot` and write nothing under the lab root;
+//! none of them creates a directory. Mutating commands go through
+//! [`mutable_root`], which creates the layout (0700) once, and then through
+//! the typestate: a writer that needs an active operation calls
+//! `into_active()`, which refuses a closed one with the command to run.
+//! Commands that need no root (`version`, `hash`, `scan`, `receipt *`,
+//! `ledger *`) never resolve one.
 
 use std::io::Write;
 
 use lcoat_core::error::Error;
 use lcoat_core::root::LabRoot;
 
+mod adapter;
+mod approval;
 mod evidence;
 mod finding;
 mod ledger;
 mod op;
+mod profile;
 mod receipt;
 mod scope;
+mod target;
 mod tools;
 
 /// The rule line the shell build prints between sections.
@@ -27,27 +34,56 @@ pub const RULE: &str = "--------------------------------------------------------
 pub const USAGE: &str = "usage:
   lcoat help
   lcoat version
+  lcoat target add <name> <address> [--scope-status status] [--criticality level] [--tag tag] [--owner owner] [notes...]
+  lcoat target show <name>
+  lcoat target list
+  lcoat profile list
+  lcoat profile show <name>
+  lcoat op start [--profile profile] <name> <target> [notes...]
+  lcoat op resume <name>
   lcoat op list
+  lcoat op status [name]
+  lcoat op show [name]
+  lcoat op brief [name]
   lcoat op readiness [name]
-  lcoat op verify [name] [closeout-manifest]
-  lcoat op audit-verify [name] [audit-packet]
-  lcoat op archive-verify [name] [archive-packet]
-  lcoat op trust-chain [name] [--strict]
+  lcoat op close [name] [--force]
+  lcoat op report [name] [report-name]
+  lcoat op handoff [name] [handoff-name]
+  lcoat op closeout [name] [manifest-name]
+  lcoat op audit-packet [name] [packet-name]
+  lcoat op archive-packet [name] [packet-name]
+  lcoat op verify [name] [closeout-manifest] [--json]
+  lcoat op audit-verify [name] [audit-packet] [--json]
+  lcoat op archive-verify [name] [archive-packet] [--json]
+  lcoat op trust-chain [name] [--strict] [--json]
   lcoat scope status [operation]
+  lcoat scope check <capability> <target>
+  lcoat approval grant <capability> --reason text --expires <YYYY-MM-DD|timestamp|Nh|Nd>
+  lcoat approval list [operation]
+  lcoat approval revoke <capability> --reason text
+  lcoat evidence add <path> [--kind kind] [--target target] [--classification label] [--redacted true|false]
   lcoat evidence list [operation]
-  lcoat evidence verify [operation]
+  lcoat evidence verify [operation] [--json]
+  lcoat finding add <title> [--level observed|inferred|validated] [--severity severity] [--confidence confidence] [--status status] [--impact text] [--recommendation text] [--evidence id]...
+  lcoat finding resolve <id> [--evidence id]... [--note text]
+  lcoat finding accept <id> --reason text [--owner owner] [--expires date] [--evidence id]...
+  lcoat finding reopen <id> [--note text]
+  lcoat finding note <id> <text>
   lcoat finding list [operation]
+  lcoat adapter list
+  lcoat adapter run <adapter> <target> [--timeout seconds] [--] [tool args...]
   lcoat ledger verify <ledger-file|-> [--json]
   lcoat ledger checkpoint <ledger-file|-> [--json]
+  lcoat ledger chain-verify [operation] [--json]
   lcoat receipt create --action action --actor actor --subject-type type --subject ref [--prev-hash sha256] [--evidence-ref ref] [--artifact-ref path=sha256] [--approval-ref ref] [--limitation text] [--out receipt.json] [--json]
   lcoat receipt verify <receipt-file|-> [--json]
   lcoat receipt replay <receipt-file> [receipt-file ...] [--json]
   lcoat hash <file>...
   lcoat scan <file.json>... | lcoat scan --text <string>
 
-The lab root comes from LCOAT_ROOT (or LAB_ROOT); read-only commands never
-create it. Phase 2 adds the write side (target, profile, op start/close,
-evidence add, finding add, packets, adapters).
+The lab root comes from LCOAT_ROOT (or LAB_ROOT). Read-only commands never
+create it; mutating commands create the layout once. Tiers: 0-2 run under
+the scope profile, 3 needs 'approval grant', 4 and 5 are refused.
 ";
 
 /// A command's failure: an operator-facing error, or an exit code for a
@@ -87,6 +123,10 @@ impl Ctx<'_> {
     /// `key: value`
     pub fn kv(&mut self, key: &str, value: &str) {
         let _ = writeln!(self.out, "{key}: {value}");
+    }
+    /// `ok: msg`
+    pub fn ok(&mut self, msg: &str) {
+        let _ = writeln!(self.out, "ok: {msg}");
     }
     /// `note: msg`
     pub fn note(&mut self, msg: &str) {
@@ -170,10 +210,14 @@ fn dispatch(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
         "scan" => tools::scan(ctx, rest),
         "receipt" => receipt::run(ctx, rest),
         "ledger" => ledger::run(ctx, rest),
-        "op" => op::run(ctx, &root()?, rest),
-        "scope" => scope::run(ctx, &root()?, rest),
-        "evidence" => evidence::run(ctx, &root()?, rest),
-        "finding" => finding::run(ctx, &root()?, rest),
+        "op" => op::run(ctx, rest),
+        "scope" => scope::run(ctx, rest),
+        "evidence" => evidence::run(ctx, rest),
+        "finding" => finding::run(ctx, rest),
+        "target" => target::run(ctx, rest),
+        "profile" => profile::run(ctx, rest),
+        "approval" => approval::run(ctx, rest),
+        "adapter" => adapter::run(ctx, rest),
         other => Err(fail(format!(
             "unknown command: {other}\n{}",
             USAGE.trim_end()
@@ -181,8 +225,52 @@ fn dispatch(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
     }
 }
 
-fn root() -> std::result::Result<LabRoot, CliError> {
+/// The lab root for a read-only command: resolved, never created.
+pub fn root() -> std::result::Result<LabRoot, CliError> {
     Ok(LabRoot::from_env()?)
+}
+
+/// The lab root for a mutating command: resolved and laid out (0700).
+pub fn mutable_root() -> std::result::Result<LabRoot, CliError> {
+    let r = LabRoot::from_env()?;
+    r.ensure_layout()?;
+    Ok(r)
+}
+
+/// Scan a free-text argument into [`MetadataOnly`], refusing credentials
+/// and raw-content markers with the operator's flag named.
+pub fn metadata(
+    flag: &str,
+    text: &str,
+) -> std::result::Result<lcoat_core::metadata::MetadataOnly, CliError> {
+    lcoat_core::metadata::MetadataOnly::scan(text)
+        .map_err(|e| fail(format!("{flag}: refusing to record this text: {e}")))
+}
+
+/// `[name]` then the flags: the first non-flag argument names the operation.
+pub fn first_name(args: &[String]) -> &str {
+    args.first()
+        .filter(|a| !a.starts_with('-'))
+        .map(String::as_str)
+        .unwrap_or("")
+}
+
+/// `[name] [second]`: the first two non-flag arguments.
+pub fn two_names(args: &[String]) -> (&str, &str) {
+    let mut names = args
+        .iter()
+        .filter(|a| !a.starts_with('-'))
+        .map(String::as_str);
+    (names.next().unwrap_or(""), names.next().unwrap_or(""))
+}
+
+/// The active operation (or the named one) as `Active`, for writers.
+pub fn load_active(
+    root: &LabRoot,
+    name: &str,
+) -> std::result::Result<lcoat_core::operation::Operation<lcoat_core::operation::Active>, CliError>
+{
+    Ok(lcoat_core::operation::Operation::load_named_or_active(root, name)?.into_active()?)
 }
 
 /// `[name]` or nothing: the first non-flag argument names the operation.

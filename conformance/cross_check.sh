@@ -78,7 +78,15 @@ if "$RS" help 2>/dev/null | grep -q "^  lcoat op start"; then
   ( cd "${roots[0]}" && scenario LAB_ROOT "${roots[0]}/tools/atlas/bin/atlas" "${roots[0]}" )
   ( cd "${roots[1]}" && scenario LCOAT_ROOT "$GO" "${roots[1]}" )
   ( cd "${roots[2]}" && scenario LCOAT_ROOT "$RS" "${roots[2]}" )
-  norm() { sed -e "s#$1#ROOT#g" -e 's/[0-9a-f]\{64\}/HASH/g' "$2"; }
+  # Normalize paths and hashes, then the format 1.1 additions Lab Coat makes
+  # (docs/BLUEPRINT.md, "Format 1.1 details"): rel= tokens, ledger chain
+  # fields, and the Evidence manifest slot the shell leaves as `none`.
+  norm() {
+    sed -e "s#$1#ROOT#g" -e 's/[0-9a-f]\{64\}/HASH/g' \
+        -e 's/ rel=[^ ]*//g' \
+        -e 's/,"prev_hash":\(null\|"HASH"\),"event_hash":"HASH"//' \
+        -e 's/^- Evidence manifest: .*/- Evidence manifest: <v1.1 slot>/' "$2"
+  }
   echo "  -- structural diff (shell vs rust; shell vs go) --"
   while IFS= read -r rel; do
     for i in 1 2; do
@@ -87,6 +95,15 @@ if "$RS" help 2>/dev/null | grep -q "^  lcoat op start"; then
       diff <(norm "${roots[0]}" "${roots[0]}/$rel") <(norm "${roots[$i]}" "$f") >/dev/null || { echo "  DIFF ${names[$i]}: $rel"; fail=1; }
     done
   done < <(cd "${roots[0]}" && find sessions targets reports -type f | sort)
+  echo "  -- files only the Rust root has (expected: format 1.1 manifest, lock files) --"
+  extra="$(comm -13 <(cd "${roots[0]}" && find sessions targets reports -type f | sort) <(cd "${roots[2]}" && find sessions targets reports -type f | sort))"
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    case "$rel" in
+      */evidence/manifest.ndjson|*/.lock) echo "  ok   $rel" ;;
+      *) echo "  UNEXPECTED extra file: $rel"; fail=1 ;;
+    esac
+  done <<<"$extra"
   echo "  -- every verifier on every root --"
   for i in 0 1 2; do for j in 0 1 2; do
     case $j in 0) bin="${roots[$i]}/tools/atlas/bin/atlas"; var=LAB_ROOT;; 1) bin="$GO"; var=LCOAT_ROOT;; 2) bin="$RS"; var=LCOAT_ROOT;; esac

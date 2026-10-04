@@ -34,6 +34,11 @@ impl Utc {
         self.secs
     }
 
+    /// An instant from seconds since the Unix epoch.
+    pub fn from_unix(secs: i64) -> Self {
+        Self { secs }
+    }
+
     /// Parse `YYYY-MM-DDTHH:MM:SSZ`.
     pub fn parse(s: &str) -> Option<Self> {
         let b = s.as_bytes();

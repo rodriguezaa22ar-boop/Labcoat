@@ -11,7 +11,7 @@ pub mod write;
 
 pub use trustchain::{TrustChain, collect_trust_chain};
 pub use verify::{VerifyResult, archive_verify, audit_verify, closeout_verify};
-pub use write::{Written, archive, audit, closeout, handoff};
+pub use write::{Written, archive, audit, closeout, handoff, latest};
 
 use std::path::Path;
 

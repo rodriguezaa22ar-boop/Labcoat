@@ -284,7 +284,7 @@ pub fn render<S: State>(op: &Operation<S>) -> Result<String> {
         b.push('\n');
     }
 
-    b.push_str("## Remediation Priorities\n\n");
+    b.push_str("\n## Remediation Priorities\n\n");
     let mut with_rec: Vec<&Finding> = all
         .iter()
         .filter(|f| !f.recommendation.is_empty())
