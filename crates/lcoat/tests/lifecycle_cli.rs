@@ -202,27 +202,45 @@ fn full_lifecycle_through_the_binary() {
     assert!(ok(&lcoat(&root, &["approval", "list"])).contains("safe-validation"));
 
     // Adapter: script at tier 3 runs under the grant and lands as evidence.
-    let a = ok(&lcoat(
-        &root,
-        &[
-            "adapter",
-            "run",
-            "script",
-            "demo-node",
-            "--tier",
-            "3",
-            "--",
-            "/bin/echo",
-            "probe",
-        ],
-    ));
-    assert_eq!(kv(&a, "tier"), "3");
-    assert!(kv(&a, "evidence").starts_with("ev_"));
-    let e = err(&lcoat(
-        &root,
-        &["adapter", "run", "nmap", "demo-node", "10.9.9.9"],
-    ));
-    assert!(e.contains("positional argument"));
+    // A build without the adapters feature says so and verifies everything else.
+    if cfg!(feature = "adapters") {
+        let a = ok(&lcoat(
+            &root,
+            &[
+                "adapter",
+                "run",
+                "script",
+                "demo-node",
+                "--tier",
+                "3",
+                "--",
+                "/bin/echo",
+                "probe",
+            ],
+        ));
+        assert_eq!(kv(&a, "tier"), "3");
+        assert!(kv(&a, "evidence").starts_with("ev_"));
+        let e = err(&lcoat(
+            &root,
+            &["adapter", "run", "nmap", "demo-node", "10.9.9.9"],
+        ));
+        assert!(e.contains("positional argument"));
+    } else {
+        let e = err(&lcoat(
+            &root,
+            &[
+                "adapter",
+                "run",
+                "script",
+                "demo-node",
+                "--tier",
+                "1",
+                "--",
+                "/bin/true",
+            ],
+        ));
+        assert!(e.contains("without the adapters feature"), "{e}");
+    }
 
     ok(&lcoat(&root, &["op", "report"]));
     ok(&lcoat(&root, &["op", "handoff"]));
