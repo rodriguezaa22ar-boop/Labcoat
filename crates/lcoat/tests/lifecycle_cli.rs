@@ -896,3 +896,69 @@ fn evidence_diff_compares_two_scans() {
     assert!(err(&lcoat(&root, &["evidence", "diff", &b, &a])).contains("changed since capture"));
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Field run 1: two pasted placeholders (`<fedora-LAN-IP>`, `<that-target>`)
+/// became shell redirects. Commands now print `next:` lines with the real
+/// ids; running one as printed must work.
+#[test]
+fn next_lines_run_as_printed() {
+    let root = fresh("next");
+    let t = ok(&lcoat(
+        &root,
+        &[
+            "target",
+            "add",
+            "fedora-lab",
+            "100.71.57.96",
+            "--scope-status",
+            "in-scope",
+        ],
+    ));
+    assert!(
+        t.contains("next: lcoat op start fedora-lab-check fedora-lab"),
+        "{t}"
+    );
+    ok(&lcoat(
+        &root,
+        &["op", "start", "fedora-lab-check", "fedora-lab"],
+    ));
+    let f = ok(&lcoat(
+        &root,
+        &["finding", "add", "Open tcp/514 (shell) it's $(id)"],
+    ));
+    let line = f
+        .lines()
+        .find_map(|l| l.strip_prefix("next: lcoat finding resolve "))
+        .unwrap_or_else(|| panic!("{f}"));
+    let out = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(format!(
+            "{} finding resolve {line}",
+            env!("CARGO_BIN_EXE_lcoat")
+        ))
+        .env("LCOAT_ROOT", &root)
+        .env("LCOAT_NOW", "2026-10-02T07:40:00Z")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("status: resolved"));
+    let list = ok(&lcoat(&root, &["finding", "list"]));
+    assert!(list.contains("it's $(id)"), "{list}");
+    let r = lcoat(
+        &root,
+        &[
+            "target",
+            "add",
+            "maybe",
+            "10.0.0.9",
+            "--scope-status",
+            "review",
+        ],
+    );
+    assert!(String::from_utf8_lossy(&r.stdout).contains("nothing above Tier 0 will contact"));
+    let _ = std::fs::remove_dir_all(&root);
+}

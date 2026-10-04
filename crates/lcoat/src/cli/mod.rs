@@ -254,6 +254,26 @@ pub fn metadata(
 }
 
 /// `[name]` then the flags: the first non-flag argument names the operation.
+/// One argument quoted for bash and zsh, for the `next:` lines commands
+/// print: plain words stay bare, anything else is single-quoted with `'`
+/// written as `'\''`. Field run 1: placeholders like `<target>` in pasted
+/// commands became shell redirects twice, so the hints carry real values.
+pub fn shell_word(s: &str) -> String {
+    if !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._/:=@%+-,".contains(c))
+    {
+        return s.to_owned();
+    }
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Print a ready-to-run follow-up command.
+pub fn next(ctx: &mut Ctx<'_>, words: &[&str]) {
+    let line: Vec<String> = words.iter().map(|w| shell_word(w)).collect();
+    ctx.line(&format!("next: lcoat {}", line.join(" ")));
+}
+
 pub fn first_name(args: &[String]) -> &str {
     args.first()
         .filter(|a| !a.starts_with('-'))
@@ -323,4 +343,44 @@ pub fn load_read_only_op(
         return Err(fail(format!("usage: {usage}")));
     }
     load_op(root, args)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::shell_word;
+
+    /// Every quoted word must reach the program as exactly that one
+    /// argument through a real bash: banners chosen by a scanned host end
+    /// up in these lines.
+    #[test]
+    fn shell_word_round_trips_through_bash() {
+        let cases = [
+            "plain",
+            "Open tcp/22 (ssh OpenSSH)",
+            "it's",
+            "$(touch /tmp/lcoat-pwned)",
+            "`id`",
+            "a\\b",
+            "semi;colon && pipe | redirect > x < y",
+            "quote ' and \" both",
+            "glob * ? [x]",
+            "~home #hash",
+            "ünïcödé",
+            "",
+            "'",
+            "''",
+        ];
+        for c in cases {
+            let w = shell_word(c);
+            let out = std::process::Command::new("bash")
+                .arg("-c")
+                .arg(format!("printf '%s' {w}"))
+                .output()
+                .unwrap();
+            assert_eq!(String::from_utf8(out.stdout).unwrap(), c, "word {w:?}");
+        }
+        assert!(!std::path::Path::new("/tmp/lcoat-pwned").exists());
+        assert_eq!(shell_word("ev_20261004T080003Z"), "ev_20261004T080003Z");
+    }
 }

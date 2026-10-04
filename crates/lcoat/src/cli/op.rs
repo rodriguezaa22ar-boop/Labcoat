@@ -243,6 +243,7 @@ fn close(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
     ctx.line("status: closed");
     ctx.kv("readiness", st.status);
     ctx.kv("force", if force { "1" } else { "0" });
+    super::next(ctx, &["op", "closeout", &closed.slug]);
     Ok(())
 }
 
@@ -331,6 +332,16 @@ fn print_summary<S: State>(ctx: &mut Ctx<'_>, op: &Operation<S>) -> CmdResult {
     }
     ctx.kv("Recon Runs", "0");
     ctx.kv("Action Sessions", "0");
+    // Lab Coat's adapter runs are not the shell's recon runs; shown only
+    // when there are any, so shell-written operations print as before.
+    let adapter_runs = op
+        .events()?
+        .iter()
+        .filter(|e| e.event == "adapter.finished")
+        .count();
+    if adapter_runs > 0 {
+        ctx.kv("Adapter Runs", &adapter_runs.to_string());
+    }
     ctx.kv(
         "Evidence",
         &evidence::count(&op.dir, &op.target)?.to_string(),

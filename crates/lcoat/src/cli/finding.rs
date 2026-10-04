@@ -97,6 +97,22 @@ fn add(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
     let f = findings::add(&op, &p)?;
     ctx.ok("finding added");
     print_finding(ctx, &f);
+    super::next(
+        ctx,
+        &["finding", "resolve", &f.id, "--note", "what fixed it"],
+    );
+    super::next(
+        ctx,
+        &[
+            "finding",
+            "accept",
+            &f.id,
+            "--reason",
+            "why it is acceptable",
+            "--expires",
+            "90d",
+        ],
+    );
     Ok(())
 }
 

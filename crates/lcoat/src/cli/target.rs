@@ -84,6 +84,14 @@ fn add(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
     let root = mutable_root()?;
     let slug = add_target(&root, &t)?;
     ctx.line(&format!("created target: {slug}"));
+    if t.scope_status == "in-scope" {
+        super::next(ctx, &["op", "start", &format!("{slug}-check"), &slug]);
+    } else {
+        ctx.note(&format!(
+            "scope status is '{}': nothing above Tier 0 will contact this target until it is added with --scope-status in-scope",
+            t.scope_status
+        ));
+    }
     Ok(())
 }
 

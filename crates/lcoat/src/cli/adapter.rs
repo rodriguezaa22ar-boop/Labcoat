@@ -137,6 +137,26 @@ fn run_adapter(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
                 f.severity, f.confidence, f.title, f.detail
             ));
         }
+        ctx.line("");
+        ctx.line("To record one, run its line (titles are quoted; the evidence id is this run's):");
+        for f in &out.proposed {
+            super::next(
+                ctx,
+                &[
+                    "finding",
+                    "add",
+                    &f.title,
+                    "--level",
+                    "observed",
+                    "--severity",
+                    f.severity,
+                    "--confidence",
+                    f.confidence,
+                    "--evidence",
+                    &out.evidence_id,
+                ],
+            );
+        }
     }
     if out.exit_code != 0 {
         Err(super::CliError::Exit(1))
