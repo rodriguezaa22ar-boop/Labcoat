@@ -29,3 +29,12 @@ dependencies = [
 [[package]]
 name = "lcoat-format"
 version = "0.2.0-dev"
+
+[[package]]
+name = "lcoat-fuzz"
+version = "0.2.0-dev"
+dependencies = [
+ "lcoat-adapters",
+ "lcoat-core",
+ "lcoat-format",
+]

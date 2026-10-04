@@ -1,0 +1,120 @@
+# cargo-fuzz (libFuzzer, coverage-guided) harnesses. Each target calls the
+# same function as the std-only engine in crates/lcoat-fuzz, so both check
+# identical invariants. Needs nightly and network access for libfuzzer-sys,
+# so it lives outside the main workspace; CI runs it (.github/workflows/fuzz.yml).
+#
+#   cargo install cargo-fuzz
+#   cargo run -p lcoat-fuzz -- seeds all fuzz/corpus
+#   cargo +nightly fuzz run nmap_xml fuzz/corpus/nmap_xml -- -max_total_time=300
+[package]
+name = "lcoat-fuzz-libfuzzer"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+lcoat-fuzz = { path = "../crates/lcoat-fuzz" }
+
+# Its own workspace, so the main workspace never needs nightly or the network.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+overflow-checks = true
+debug-assertions = true
+
+[[bin]]
+name = "nmap_xml"
+path = "fuzz_targets/nmap_xml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "nmap_args"
+path = "fuzz_targets/nmap_args.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "script_args"
+path = "fuzz_targets/script_args.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "json"
+path = "fuzz_targets/json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ndjson"
+path = "fuzz_targets/ndjson.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ledger_chain"
+path = "fuzz_targets/ledger_chain.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "envfile"
+path = "fuzz_targets/envfile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "metadata_scan"
+path = "fuzz_targets/metadata_scan.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "timestamp"
+path = "fuzz_targets/timestamp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "slug"
+path = "fuzz_targets/slug.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "packet_text"
+path = "fuzz_targets/packet_text.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "receipt"
+path = "fuzz_targets/receipt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "op_files"
+path = "fuzz_targets/op_files.rs"
+test = false
+doc = false
+bench = false

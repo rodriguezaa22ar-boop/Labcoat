@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 use lcoat_format::clock;
 use lcoat_format::fsutil::{mkdir_private, write_private};
-use lcoat_format::ids::slugify;
+use lcoat_format::ids::{is_safe_slug, slugify};
 
 use crate::error::Result;
 use crate::evidence;
@@ -177,8 +177,8 @@ fn packet_path<S: State>(
         name.to_owned()
     };
     let slug = slugify(&name);
-    if slug.is_empty() {
-        fail!("{kind} name produced an empty slug");
+    if !is_safe_slug(&slug) {
+        fail!("{kind} name {name:?} does not make a usable file name (slug {slug:?})");
     }
     let dir = op.dir.join(subdir);
     mkdir_private(&dir)?;

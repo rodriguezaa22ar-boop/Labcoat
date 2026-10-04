@@ -41,6 +41,14 @@ pub fn slugify(s: &str) -> String {
     collapsed
 }
 
+/// Whether a slug may name a file or directory under the lab root: not
+/// empty, not hidden (no leading `.`), and therefore never `.` or `..`.
+/// `slugify` keeps dots (the shell build does), so every writer that turns
+/// a name into a path checks this before using it.
+pub fn is_safe_slug(slug: &str) -> bool {
+    !slug.is_empty() && !slug.starts_with('.')
+}
+
 /// `<prefix>_<YYYYMMDDTHHMMSSZ>`, with a `_02`, `_03` suffix when a
 /// directory for that ID already exists under `dir`. The caller creates the
 /// directory immediately to claim the ID.
@@ -65,6 +73,19 @@ pub fn next_id_at(dir: &Path, prefix: &str, now: Utc) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Found while writing the `slug` fuzz target: slugify keeps dots, so
+    /// `..` and `.hidden` survive it and would name the parent directory or
+    /// a hidden file. Writers refuse them with `is_safe_slug`.
+    #[test]
+    fn dot_slugs_are_not_safe() {
+        for name in ["..", ".", "...", ".hidden", "", "///"] {
+            assert!(!is_safe_slug(&slugify(name)), "{name:?} considered safe");
+        }
+        for name in ["full-op", "v1.2", "a..b", "x."] {
+            assert!(is_safe_slug(&slugify(name)), "{name:?} refused");
+        }
+    }
 
     #[test]
     fn slugify_matches_common_sh() {

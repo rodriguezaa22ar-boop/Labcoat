@@ -1,0 +1,22 @@
+[package]
+name = "lcoat-fuzz"
+description = "Fuzz targets for every Lab Coat parser that reads untrusted bytes, and a dependency-free mutational engine that runs them under `cargo test`. The same target functions back the cargo-fuzz harness in fuzz/. Never shipped."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[[bin]]
+name = "lcoat-fuzz"
+path = "src/main.rs"
+
+[dependencies]
+lcoat-format = { path = "../lcoat-format" }
+lcoat-core = { path = "../lcoat-core" }
+lcoat-adapters = { path = "../lcoat-adapters" }
+
+[lints]
+workspace = true

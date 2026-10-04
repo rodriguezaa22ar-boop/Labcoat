@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use lcoat_format::clock;
 use lcoat_format::envfile::Record;
-use lcoat_format::ids::slugify;
+use lcoat_format::ids::{is_safe_slug, slugify};
 
 use crate::error::{Error, Result};
 use crate::tier::Tier;
@@ -78,8 +78,8 @@ pub fn load_profile(profiles_dir: &Path, name: &str) -> Result<Profile> {
         Record::new()
     } else {
         let slug = slugify(name);
-        if slug.is_empty() {
-            fail!("profile name produced an empty slug");
+        if !is_safe_slug(&slug) {
+            fail!("profile name {name:?} does not make a usable file name (slug {slug:?})");
         }
         match Record::load(&profiles_dir.join(format!("{slug}.env"))) {
             Ok(r) => r,

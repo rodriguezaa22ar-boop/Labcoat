@@ -39,7 +39,10 @@ impl Utc {
         Self { secs }
     }
 
-    /// Parse `YYYY-MM-DDTHH:MM:SSZ`.
+    /// Parse `YYYY-MM-DDTHH:MM:SSZ`, strictly: ASCII digits only (no sign),
+    /// a real calendar date, no leap second. Every accepted string is the
+    /// one [`Utc::timestamp`] prints for it, so one instant has exactly one
+    /// spelling on disk (fuzz target `timestamp`).
     pub fn parse(s: &str) -> Option<Self> {
         let b = s.as_bytes();
         if b.len() != 20
@@ -52,7 +55,14 @@ impl Utc {
         {
             return None;
         }
-        let num = |r: std::ops::Range<usize>| s[r].parse::<i64>().ok();
+        let num = |r: std::ops::Range<usize>| {
+            let part = &b[r];
+            if !part.iter().all(u8::is_ascii_digit) {
+                return None;
+            }
+            part.iter()
+                .try_fold(0i64, |acc, d| Some(acc * 10 + i64::from(d - b'0')))
+        };
         let (y, mo, d, h, mi, sec) = (
             num(0..4)?,
             num(5..7)?,
@@ -61,7 +71,13 @@ impl Utc {
             num(14..16)?,
             num(17..19)?,
         );
-        if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || sec > 60 {
+        if !(1..=12).contains(&mo)
+            || d < 1
+            || d > days_in_month(y, mo)
+            || h > 23
+            || mi > 59
+            || sec > 59
+        {
             return None;
         }
         Some(Self {
@@ -111,6 +127,15 @@ pub fn today() -> String {
 }
 
 // Howard Hinnant's proleptic Gregorian algorithms.
+fn days_in_month(y: i64, m: i64) -> i64 {
+    match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        _ if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 => 29,
+        _ => 28,
+    }
+}
+
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = y.div_euclid(400);
@@ -136,6 +161,32 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
 
 #[cfg(test)]
 mod tests {
+    /// Found by fuzz target `timestamp`: signs, impossible dates and leap
+    /// seconds were accepted and printed back in a different spelling.
+    #[test]
+    fn parse_is_strict_and_canonical() {
+        for bad in [
+            "+026-10-02T07:40:00Z",
+            "2026-10-02T07:-0:00Z",
+            "2026-10-02T+7:40:00Z",
+            "2026-02-31T00:00:00Z",
+            "2026-04-31T00:00:00Z",
+            "2025-02-29T00:00:00Z",
+            "2026-10-02T07:40:60Z",
+            "2026-10-02T24:00:00Z",
+        ] {
+            assert_eq!(Utc::parse(bad), None, "{bad} accepted");
+        }
+        for good in [
+            "2024-02-29T12:00:00Z",
+            "2000-02-29T00:00:00Z",
+            "1970-01-01T00:00:00Z",
+            "9999-12-31T23:59:59Z",
+        ] {
+            assert_eq!(Utc::parse(good).map(Utc::timestamp).as_deref(), Some(good));
+        }
+    }
+
     use super::*;
 
     #[test]

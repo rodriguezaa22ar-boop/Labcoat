@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use lcoat_format::clock;
 use lcoat_format::envfile::{Record, upsert_file};
 use lcoat_format::fsutil::{file_exists, mkdir_private};
-use lcoat_format::ids::slugify;
+use lcoat_format::ids::{is_safe_slug, slugify};
 
 use crate::error::{Error, Result};
 use crate::fail;
@@ -141,8 +141,11 @@ pub struct NewTarget {
 /// slug. Refuses an existing slug, an empty slug, or invalid enumerations.
 pub fn add_target(root: &LabRoot, t: &NewTarget) -> Result<String> {
     let slug = slugify(&t.name);
-    if slug.is_empty() {
-        fail!("target name produced an empty slug");
+    if !is_safe_slug(&slug) {
+        fail!(
+            "target name {:?} does not make a usable file name (slug {slug:?}); use letters or digits",
+            t.name
+        );
     }
     if !scope::valid_scope_status(&t.scope_status) {
         fail!(
@@ -520,6 +523,9 @@ impl Operation<AnyState> {
     /// Load by name or slug, as `load_atlas_operation` does.
     pub fn load(root: &LabRoot, name: &str) -> Result<Self> {
         let slug = slugify(name);
+        if !is_safe_slug(&slug) {
+            fail!("unknown operation: {slug}");
+        }
         let dir = root.op_dir(&slug);
         let path = dir.join(SESSION_FILE);
         let rec = match Record::load(&path) {
@@ -702,8 +708,11 @@ impl Operation<Active> {
         }
         let profile = scope::load_profile(&root.profiles_dir, &p.profile)?;
         let slug = slugify(&p.name);
-        if slug.is_empty() {
-            fail!("operation name produced an empty slug");
+        if !is_safe_slug(&slug) {
+            fail!(
+                "operation name {:?} does not make a usable directory name (slug {slug:?}); use letters or digits",
+                p.name
+            );
         }
         let _state_lock = Lock::acquire(&root.atlas_state)?;
         let dir = root.op_dir(&slug);

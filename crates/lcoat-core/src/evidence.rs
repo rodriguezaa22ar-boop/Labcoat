@@ -228,7 +228,11 @@ pub fn add(op: &Operation<Active>, p: &AddParams) -> Result<Record> {
     let base = p
         .source
         .file_name()
-        .map(|n| slugify(&n.to_string_lossy()))
+        .map(|n| {
+            slugify(&n.to_string_lossy())
+                .trim_start_matches('.')
+                .to_owned()
+        })
         .unwrap_or_default();
     let name = if base.is_empty() {
         "artifact".to_owned()

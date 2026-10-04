@@ -11,7 +11,7 @@ Lab Coat reads every operation the shell and Go builds ever wrote, writes files 
 
 ## Status
 
-**Phase 2 of 4 done: the whole v1 lifecycle, written in format 1.1.** `lcoat` starts, runs, closes and packages an operation end to end: `target add`, `op start|resume|close|report|handoff|closeout|audit-packet|archive-packet`, `evidence add`, `finding add|resolve|accept|reopen|note`, `approval grant|list|revoke`, `adapter run nmap|script`, `scope check`, plus every read-only command from phase 1. Everything it writes is still verified by the shell build and by Lite (`conformance/cross_check.sh`: one frozen-clock scenario through all three builds, every verifier on every root, 27 runs). On top of the v1 files it writes what they could not enforce: a hash-chained ledger (`ledger chain-verify`), an evidence manifest anchored in the packets, finding status changes, recorded Tier 3 approvals with mandatory expiry, and scan vantage. `conformance/tamper_rust.sh` runs six tamper cases the shell's verifiers cannot see (edited or deleted artifacts, forged manifests, rewritten or spliced ledger events, a truncated tail), with the shell and Lite run on the same roots to show which build catches what. Zero dependencies; 119 tests, including crash injection at every step of every multi-file write and a compile-fail suite for the rules that are types.
+**Phase 2 of 4 done: the whole v1 lifecycle, written in format 1.1.** `lcoat` starts, runs, closes and packages an operation end to end: `target add`, `op start|resume|close|report|handoff|closeout|audit-packet|archive-packet`, `evidence add`, `finding add|resolve|accept|reopen|note`, `approval grant|list|revoke`, `adapter run nmap|script`, `scope check`, plus every read-only command from phase 1. Everything it writes is still verified by the shell build and by Lite (`conformance/cross_check.sh`: one frozen-clock scenario through all three builds, every verifier on every root, 27 runs). On top of the v1 files it writes what they could not enforce: a hash-chained ledger (`ledger chain-verify`), an evidence manifest anchored in the packets, finding status changes, recorded Tier 3 approvals with mandatory expiry, and scan vantage. `conformance/tamper_rust.sh` runs six tamper cases the shell's verifiers cannot see (edited or deleted artifacts, forged manifests, rewritten or spliced ledger events, a truncated tail), with the shell and Lite run on the same roots to show which build catches what. Zero dependencies; 126 tests, including crash injection at every step of every multi-file write, a compile-fail suite for the rules that are types, and 13 fuzz targets (one per parser that reads untrusted bytes, nmap XML first) that run in every `cargo test` and, coverage-guided, in a nightly cargo-fuzz job.
 
 Phase 3 (review packet, `evidence bundle`, `doctor`, `--json` field parity) and phase 4 (receipt signatures, release packets, 0.2.0) follow; the field re-run on the Fedora lab server happens with the operator at the keyboard.
 
@@ -25,6 +25,7 @@ The plan, with an exit check per phase, is in [`docs/BLUEPRINT.md`](docs/BLUEPRI
 | `lcoat-core` | scope, ledger, evidence, findings, packets, verifiers, receipts; owns `MetadataOnly` | `lcoat-format` |
 | `lcoat-adapters` | nmap, script; the only crate that spawns a process | `lcoat-core` |
 | `lcoat` | the CLI | all of the above |
+| `lcoat-fuzz` | fuzz targets and a std-only fuzzing engine (never shipped) | all of the above |
 
 ## Build and test
 
@@ -47,6 +48,11 @@ ATLAS_REPO=/path/to/atlas-trust-infrastructure GO_PROJECT=/path/to/GO-project co
 
 # Crash-injection tests need the crash points compiled in (never in a release build):
 cargo test --workspace --features lcoat/test-support
+
+# Longer fuzz campaigns (std-only engine; failing inputs land in target/fuzz-crashes/):
+cargo run -p lcoat-fuzz --profile fuzz -- run all --seconds 600
+# Coverage-guided, needs nightly and cargo-fuzz:
+cargo run -p lcoat-fuzz -- seeds all fuzz/corpus && cargo +nightly fuzz run nmap_xml fuzz/corpus/nmap_xml
 ```
 
 Requires Rust 1.89 or later (`rust-toolchain.toml` selects stable). No other tools are needed to build; `nmap` is needed at run time for the nmap adapter.

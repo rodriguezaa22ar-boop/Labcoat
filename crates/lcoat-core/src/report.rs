@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use lcoat_format::clock;
 use lcoat_format::fsutil::{mkdir_private, write_private};
-use lcoat_format::ids::slugify;
+use lcoat_format::ids::{is_safe_slug, slugify};
 
 use crate::error::Result;
 use crate::evidence;
@@ -179,8 +179,8 @@ pub fn write<S: State>(op: &Operation<S>, report_name: &str) -> Result<PathBuf> 
         report_name.to_owned()
     };
     let slug = slugify(&name);
-    if slug.is_empty() {
-        fail!("report name produced an empty slug");
+    if !is_safe_slug(&slug) {
+        fail!("report name {name:?} does not make a usable file name (slug {slug:?})");
     }
     let _lock = op.lock()?;
     mkdir_private(&op.root.reports_dir)?;

@@ -1,0 +1,67 @@
+name: fuzz
+
+# Coverage-guided fuzzing (libFuzzer via cargo-fuzz) of every parser that
+# reads untrusted bytes. The same targets run without instrumentation in
+# every `cargo test` (crates/lcoat-fuzz); this job adds coverage guidance.
+# Short on every push, long every night; a crash fails the job and its
+# input is uploaded as an artifact.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "seconds per target"
+        default: "300"
+
+permissions:
+  contents: read
+
+jobs:
+  libfuzzer:
+    name: cargo-fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - nmap_xml
+          - nmap_args
+          - script_args
+          - json
+          - ndjson
+          - ledger_chain
+          - envfile
+          - metadata_scan
+          - timestamp
+          - slug
+          - packet_text
+          - receipt
+          - op_files
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - name: install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: seed corpus
+        run: cargo run --quiet -p lcoat-fuzz -- seeds ${{ matrix.target }} fuzz/corpus
+      - name: fuzz
+        env:
+          SECONDS_PER_TARGET: ${{ github.event_name == 'schedule' && '600' || github.event.inputs.seconds || '45' }}
+        run: |
+          cargo +nightly fuzz run ${{ matrix.target }} fuzz/corpus/${{ matrix.target }} -- \
+            -max_total_time="$SECONDS_PER_TARGET" -max_len=65536 -timeout=10 -rss_limit_mb=2048
+      - name: keep crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/
+          if-no-files-found: ignore

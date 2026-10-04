@@ -384,10 +384,10 @@ impl Adapter for Nmap {
     }
 
     fn parse(&self, stdout: &[u8]) -> Vec<ProposedFinding> {
-        let Ok(text) = std::str::from_utf8(stdout) else {
-            return Vec::new();
-        };
-        open_ports(text)
+        // Lossy, not strict: one invalid byte in a banner must not hide
+        // every other open port (the bad byte becomes U+FFFD).
+        let text = String::from_utf8_lossy(stdout);
+        open_ports(&text)
             .into_iter()
             .map(|p| {
                 let mut title = format!("Open {}/{}", p.protocol, p.port);
@@ -437,6 +437,12 @@ pub struct OpenPort {
 /// `<port protocol=".." portid="..">` elements whose `<state state="open">`
 /// child says open, with the optional `<service name=".." product="..">`.
 /// Anything malformed is skipped; this never fails.
+///
+/// The document comes back from the network, and `-sV` service and product
+/// strings are chosen by the scanned host. So a port is kept only when its
+/// protocol is one nmap emits and its number is a plain decimal in
+/// 1..=65535, and the two banner fields are passed through [`banner`]
+/// before they can reach a terminal or a finding title.
 pub fn open_ports(xml: &str) -> Vec<OpenPort> {
     let mut out = Vec::new();
     let mut rest = xml;
@@ -455,12 +461,12 @@ pub fn open_ports(xml: &str) -> Vec<OpenPort> {
             .find("<state ")
             .map(|i| attr(&element[i..], "state"))
             .unwrap_or_default();
-        if state == "open" && !port.is_empty() {
+        if state == "open" && valid_protocol(&protocol) && valid_port(&port) {
             let (service, product) = match element.find("<service ") {
                 Some(i) => {
                     let s = &element[i..];
                     let s = &s[..s.find("/>").or_else(|| s.find('>')).unwrap_or(s.len())];
-                    (attr(s, "name"), attr(s, "product"))
+                    (banner(&attr(s, "name")), banner(&attr(s, "product")))
                 }
                 None => (String::new(), String::new()),
             };
@@ -477,6 +483,50 @@ pub fn open_ports(xml: &str) -> Vec<OpenPort> {
         }
     }
     out
+}
+
+/// Protocols nmap writes in `<port protocol=..>`.
+fn valid_protocol(p: &str) -> bool {
+    matches!(p, "tcp" | "udp" | "sctp" | "ip")
+}
+
+/// A plain decimal port number in 1..=65535 (no sign, no spaces).
+fn valid_port(p: &str) -> bool {
+    !p.is_empty()
+        && p.len() <= 5
+        && p.bytes().all(|b| b.is_ascii_digit())
+        && p.parse::<u32>().is_ok_and(|n| (1..=65_535).contains(&n))
+}
+
+/// Longest banner field kept, in characters.
+pub const BANNER_MAX: usize = 128;
+
+/// A service or product string chosen by the scanned host, made safe to
+/// print: control characters (C0, DEL, C1, line and paragraph separators)
+/// and invisible or bidirectional-override characters become `?`, and the
+/// result is cut to [`BANNER_MAX`] characters with a trailing `~`.
+pub fn banner(raw: &str) -> String {
+    let mut out: String = raw
+        .chars()
+        .map(|c| if unsafe_char(c) { '?' } else { c })
+        .collect();
+    if out.chars().count() > BANNER_MAX {
+        out = out.chars().take(BANNER_MAX - 1).collect();
+        out.push('~');
+    }
+    out
+}
+
+fn unsafe_char(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{200b}'..='\u{200f}'
+                | '\u{2028}'..='\u{202e}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{feff}'
+        )
 }
 
 /// The value of `name="..."` in a tag head, with the five XML entities
@@ -586,6 +636,48 @@ mod tests {
                 "10.10.10.5"
             ]
         );
+    }
+
+    /// Found by fuzz target `nmap_xml`: the scanned host chooses these
+    /// strings, and they used to reach the terminal unchanged.
+    #[test]
+    fn hostile_xml_is_validated_and_banners_are_defanged() {
+        let port = |proto: &str, id: &str, product: &str| {
+            format!(
+                r#"<port protocol="{proto}" portid="{id}"><state state="open"/><service name="http" product="{product}"/></port>"#
+            )
+        };
+        // Protocol and port must be what nmap writes.
+        for (proto, id) in [
+            ("tbp", "22"),
+            ("tcp", "v0"),
+            ("tcp", "0"),
+            ("tcp", "65536"),
+            ("tcp", "+22"),
+            ("tcp", " 22"),
+        ] {
+            assert!(
+                open_ports(&port(proto, id, "x")).is_empty(),
+                "{proto}/{id} accepted"
+            );
+        }
+        assert_eq!(open_ports(&port("sctp", "65535", "x")).len(), 1);
+        // An ANSI screen-clear and a fake status line become inert text.
+        let p = &open_ports(&port("tcp", "80", "\u{1b}[2J\u{1b}[1;1Hok: all clear"))[0];
+        assert_eq!(p.product, "?[2J?[1;1Hok: all clear");
+        // Bidi override and line separator.
+        let p = &open_ports(&port("tcp", "80", "Apache\u{202e}\u{2028}x"))[0];
+        assert_eq!(p.product, "Apache??x");
+        // Length is capped.
+        let p = &open_ports(&port("tcp", "80", &"A".repeat(5000)))[0];
+        assert_eq!(p.product.chars().count(), BANNER_MAX);
+        assert!(p.product.ends_with('~'));
+        // One invalid byte no longer hides every other finding.
+        let mut xml = port("tcp", "22", "Open").into_bytes();
+        xml.extend_from_slice(
+            b"<port protocol=\"tcp\" portid=\"80\"><state state=\"open\"/></port>\xff",
+        );
+        assert_eq!(Nmap.parse(&xml).len(), 2);
     }
 
     #[test]

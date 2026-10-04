@@ -171,6 +171,32 @@ Everything above except the last clause is done and checked by `conformance/cros
 - **Compile-fail suite** (`crates/lcoat-core/tests/compile_fail.rs`, std-only, no `trybuild`): eight downstream programs the compiler must refuse: writers on `Operation<Closed>`, packets on `Operation<Active>`, `close` on a closed operation, `ScopedTarget` without a preflight, `String` where `MetadataOnly` is required, a `Written` handle constructed by hand, a path where a `Written` is required.
 - **Rust-only tamper cases** (`conformance/tamper_rust.sh`, six cases): artifact edited after capture and artifact deleted (caught by `evidence verify` and the trust chain; the shell says `verified` on the same root, Lite's `evidence verify` catches them too); manifest and index forged to match the edit (caught by `op verify` / `op archive-verify` through the packet anchors, in all three builds); a ledger event rewritten or spliced out before any packet exists (caught by `ledger chain-verify` and the trust chain's `Ledger Chain` line; the shell and Lite have no chain and say `ok`); and the documented limit: a truncated tail passes the chain and is caught only by comparing against a recorded `ledger checkpoint` head.
 - **Two deliberate divergences from the shell, to record:** (1) `op closeout`, `op audit-packet` and `op archive-packet` require a closed operation (the shell writes a closeout for an active one); since `op close` clears the active pointer as the shell does, the packets are written by name afterwards (`lcoat op closeout <operation>`), and the refusal says exactly that. (2) `finding accept` works, but `finding review-packet` is phase 3, so an archive packet for an operation with accepted risks is `incomplete` until then; the trust chain reports it on the `Accepted Risk Review Packet` line rather than hiding it.
+### Fuzzing (after phase 2)
+
+Thirteen targets, each a function in `crates/lcoat-fuzz/src/targets.rs` that feeds bytes to a parser the way the binary does and asserts what makes the parser safe to trust, not only that it does not panic:
+
+| Target | Input | Invariants beyond "no panic, no hang" |
+| --- | --- | --- |
+| `nmap_xml` | `nmap -oX` from the network | ports are plain decimals in 1..=65535, protocol is one nmap writes, banners carry no control or bidi characters and are at most 128 characters, one bad byte cannot hide the other findings |
+| `nmap_args` | operator arguments | the argv passed to nmap re-parses to the same arguments; no file, spoofing or target flag survives; tier stays 1..=2 |
+| `script_args` | operator arguments | declared tier stays 1..=3; no empty command |
+| `json` | receipts, indexes | canonical, compact and pretty forms re-parse; canonical bytes are a fixed point and newline-free |
+| `ndjson`, `ledger_chain` | indexes, ledgers | freshly linked events verify; tampering event *i* is reported at *i* |
+| `envfile` | operation, scope, target, profile records | records round-trip; any string quoted as one value reads back as that value and never as a second key |
+| `metadata_scan` | free text | scanner verdicts are consistent and stable |
+| `timestamp` | expiries, ledger times | accepted strings are canonical (one spelling per instant) |
+| `slug` | names that become paths | slugs stay in `[a-z0-9._-]`, idempotent; dot-only and hidden slugs are refused |
+| `packet_text`, `receipt` | packets, receipts | anchor readers return substrings without backticks or whitespace |
+| `op_files` | a whole closed operation with one file corrupted | every reader and verifier returns a verdict |
+
+What the first campaign found, all fixed with a unit test and a regression input in `crates/lcoat-fuzz/corpus/` that every `cargo test` replays:
+
+- **nmap XML trusted the scanned host.** Protocol and port were taken as written (`tbp`, `v0`, `0`, `65536` became "open ports"), and `-sV` banners went to the operator's terminal unfiltered, so a hostile service could send ANSI escape sequences (clear the screen, print a fake status line) or bidi overrides. Now protocol and port are validated, banners have control and invisible characters replaced with `?` and are capped at 128 characters, and an invalid UTF-8 byte no longer drops every proposed finding.
+- **Timestamps accepted signs and impossible dates** (`+026-…`, `07:-0:00`, February 31st, leap second 60), each printing back as a different instant's spelling. Now digits only, real calendar dates, canonical.
+- **Dot names became paths** (found while writing the `slug` target): `slugify` keeps dots, as the shell's does, so `target add ..` wrote a hidden `...env` and `op start ..` was refused only because the directory existed. Every writer now refuses an empty, dot-only or hidden slug with a message naming it.
+
+`cargo test` runs 3,000 inputs per target (about 10 s); `LCOAT_FUZZ_ITERS` raises it (40,000 per target ran clean). Long local campaigns: `cargo run -p lcoat-fuzz --profile fuzz -- run all --seconds 600`.
+
 - **Not yet, carried to phase 3:** `evidence bundle`, `finding review-packet`, `lcoat doctor`, field-by-field `--json` parity with the shell's objects, the field re-run on astra.
 
 ## Command surface
@@ -197,7 +223,7 @@ Fallback list if a hand-written piece proves costly (adopt with a one-line reaso
 3. **Three-way scenario:** one frozen-clock scenario through shell, Go and Rust; normalized diff; every verifier on every root (9 combinations, 27 runs).
 4. **Tamper cases, two tiers:** the shell's eight verdicts must be reproduced (`tamper.sh check`); six format 1.1 cases must fail only in Rust (`tamper_rust.sh`, with the shell and Lite run on the same roots to show the gap). Done in phase 2.
 5. **Property tests** over canonical JSON, envfile round trip, scanner.
-6. **Fuzzing** of envfile, NDJSON, packet anchor and nmap XML parsers. `cargo-fuzz` needs nightly, so it runs as a separate CI job on nightly; local builds and every other job stay on stable.
+6. **Fuzzing**, two engines over one set of targets (done; see "Fuzzing" below). `crates/lcoat-fuzz` holds 13 targets, one per parser that reads untrusted bytes, each asserting safety invariants, plus a dependency-free mutational engine that runs them in every `cargo test`. `fuzz/` holds cargo-fuzz (libFuzzer, coverage-guided) harnesses calling the same functions; `.github/workflows/fuzz.yml` runs them on nightly, 45 s per target on every push and 10 min per target every night. Local builds and every other job stay on stable.
 7. **Compile-fail tests** for the type-level claims: std-only, each case a tiny downstream crate built with `cargo`, one package name per case (two packages with one name share a fingerprint and a failed case can pass as fresh). Done in phase 2.
 8. **Field validation:** re-run the Fedora lab assessment with Lab Coat; Lite verifies the result; the case study gets a third column.
 

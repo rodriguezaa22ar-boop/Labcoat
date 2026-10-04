@@ -37,13 +37,13 @@ pub(crate) fn ledger_event_count(path: &str) -> usize {
 }
 
 /// The first `- <label>: ` line of a Markdown packet.
-pub(crate) fn anchor_line<'a>(text: &'a str, label: &str) -> Option<&'a str> {
+pub fn anchor_line<'a>(text: &'a str, label: &str) -> Option<&'a str> {
     let prefix = format!("- {label}: ");
     text.split('\n').find(|l| l.starts_with(&prefix))
 }
 
 /// The backtick-wrapped path in an anchor line.
-pub(crate) fn anchor_path(line: &str) -> &str {
+pub fn anchor_path(line: &str) -> &str {
     let Some(i) = line.find('`') else { return "" };
     let rest = &line[i + 1..];
     match rest.find('`') {
@@ -53,7 +53,7 @@ pub(crate) fn anchor_path(line: &str) -> &str {
 }
 
 /// A `key=value` token that follows the path in an anchor line.
-pub(crate) fn anchor_token<'a>(line: &'a str, key: &str) -> &'a str {
+pub fn anchor_token<'a>(line: &'a str, key: &str) -> &'a str {
     let prefix = format!("{key}=");
     line.split_whitespace()
         .find_map(|tok| tok.strip_prefix(prefix.as_str()))
@@ -61,7 +61,7 @@ pub(crate) fn anchor_token<'a>(line: &'a str, key: &str) -> &'a str {
 }
 
 /// A `Key: value` header line value.
-pub(crate) fn field<'a>(text: &'a str, key: &str) -> &'a str {
+pub fn field<'a>(text: &'a str, key: &str) -> &'a str {
     let prefix = format!("{key}: ");
     text.split('\n')
         .find_map(|l| l.strip_prefix(prefix.as_str()))
@@ -69,7 +69,7 @@ pub(crate) fn field<'a>(text: &'a str, key: &str) -> &'a str {
 }
 
 /// A `- Key: value` bullet value.
-pub(crate) fn bullet_value<'a>(text: &'a str, label: &str) -> &'a str {
+pub fn bullet_value<'a>(text: &'a str, label: &str) -> &'a str {
     let prefix = format!("- {label}: ");
     text.split('\n')
         .find_map(|l| l.strip_prefix(prefix.as_str()))

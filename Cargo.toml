@@ -5,7 +5,10 @@ members = [
     "crates/lcoat-core",
     "crates/lcoat-adapters",
     "crates/lcoat",
+    "crates/lcoat-fuzz",
 ]
+# cargo-fuzz harness (nightly, libFuzzer); built on its own in CI.
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.2.0-dev"
@@ -40,3 +43,11 @@ panic = "warn"
 strip = true
 lto = "thin"
 codegen-units = 1
+
+# Long fuzz campaigns: optimized, but with the checks a release build drops
+# (integer overflow, debug assertions), since those are bugs worth finding.
+[profile.fuzz]
+inherits = "release"
+debug-assertions = true
+overflow-checks = true
+strip = false
