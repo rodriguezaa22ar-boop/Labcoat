@@ -731,7 +731,9 @@ impl Operation<Active> {
         rec.upsert("SOURCE_TOOL", TOOL_NAME);
         rec.upsert("MODE", "operation");
         rec.save(&dir.join(SESSION_FILE))?;
+        crate::crash::point("start.session");
         scope::write_snapshot(&dir, &target, &profile)?;
+        crate::crash::point("start.snapshot");
         Ledger::of(&dir).append(Event {
             ts: String::new(),
             event: "op.started".into(),
@@ -743,6 +745,7 @@ impl Operation<Active> {
             detail: format!("profile={} notes={}", profile.name, p.notes),
             line: 0,
         })?;
+        crate::crash::point("start.ledger");
         history::record(&dir, "start", &target.target)?;
         set_active(root, &slug)?;
         let op = Operation::load(root, &slug)?.into_active()?;
@@ -757,6 +760,7 @@ impl Operation<Active> {
         let _lock = self.lock()?;
         upsert_file(&self.file, "STATUS", "closed")?;
         upsert_file(&self.file, "CLOSED_AT", &clock::timestamp())?;
+        crate::crash::point("close.status");
         self.append_ledger(
             "op.close.readiness",
             Tier::ReadOnly.capability(),
@@ -764,6 +768,7 @@ impl Operation<Active> {
             readiness_status,
             detail,
         )?;
+        crate::crash::point("close.readiness-event");
         self.append_ledger(
             "op.closed",
             Tier::ReadOnly.capability(),
@@ -771,6 +776,7 @@ impl Operation<Active> {
             "ok",
             &format!("{} {detail}", self.target),
         )?;
+        crate::crash::point("close.closed-event");
         history::record(&self.dir, "close", &self.target)?;
         if self.is_active() {
             let _state_lock = Lock::acquire(&self.root.atlas_state)?;

@@ -323,6 +323,7 @@ pub fn closeout(op: &Operation<Closed>, manifest_name: &str) -> Result<Written> 
         "ok",
         &path.display().to_string(),
     )?;
+    crate::crash::point("closeout.event");
     let body = render_closeout(op)?;
     let w = finish(&path, &body)?;
     history::record(&op.dir, "closeout", &path.display().to_string())?;

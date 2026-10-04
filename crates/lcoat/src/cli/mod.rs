@@ -273,6 +273,25 @@ pub fn load_active(
     Ok(lcoat_core::operation::Operation::load_named_or_active(root, name)?.into_active()?)
 }
 
+/// The named operation (or the active one) as `Closed`, for packet writers.
+/// `op close` clears the active pointer, so after a close the packets are
+/// usually written by name; without a name and without an active operation
+/// the refusal says so instead of the generic "no active operation".
+pub fn load_closed(
+    root: &LabRoot,
+    name: &str,
+    verb: &str,
+) -> std::result::Result<lcoat_core::operation::Operation<lcoat_core::operation::Closed>, CliError>
+{
+    use lcoat_core::operation::Operation;
+    if name.is_empty() && Operation::active_slug(root).is_none() {
+        return Err(fail(format!(
+            "no active operation; packets are written for a closed operation, so name it: lcoat op {verb} <operation>"
+        )));
+    }
+    Ok(Operation::load_named_or_active(root, name)?.into_closed()?)
+}
+
 /// `[name]` or nothing: the first non-flag argument names the operation.
 pub fn load_op(
     root: &LabRoot,

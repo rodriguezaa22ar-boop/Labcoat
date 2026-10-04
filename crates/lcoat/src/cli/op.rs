@@ -17,8 +17,8 @@ use lcoat_format::ids::slugify;
 use lcoat_format::json::{Object, Value};
 
 use super::{
-    CliError, CmdResult, Ctx, fail, first_name, load_active, metadata, mutable_root, need_args,
-    option, root, two_names,
+    CliError, CmdResult, Ctx, fail, first_name, load_active, load_closed, metadata, mutable_root,
+    need_args, option, root, two_names,
 };
 
 /// Dispatch `op <verb>`.
@@ -269,7 +269,7 @@ fn handoff(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 fn closeout(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
     let (name, manifest_name) = two_names(args);
     let root = mutable_root()?;
-    let op = Operation::load_named_or_active(&root, name)?.into_closed()?;
+    let op = load_closed(&root, name, "closeout")?;
     let w = packet::closeout(&op, manifest_name)?;
     ctx.ok("closeout manifest written");
     ctx.kv("closeout", &w.path().display().to_string());
@@ -279,7 +279,7 @@ fn closeout(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 fn audit_packet(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
     let (name, packet_name) = two_names(args);
     let root = mutable_root()?;
-    let op = Operation::load_named_or_active(&root, name)?.into_closed()?;
+    let op = load_closed(&root, name, "audit-packet")?;
     let closeout = packet::latest(&op, "closeout")?;
     let w = packet::audit(&op, &closeout, packet_name)?;
     ctx.ok("audit packet written");
@@ -290,7 +290,7 @@ fn audit_packet(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 fn archive_packet(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
     let (name, packet_name) = two_names(args);
     let root = mutable_root()?;
-    let op = Operation::load_named_or_active(&root, name)?.into_closed()?;
+    let op = load_closed(&root, name, "archive-packet")?;
     let audit = packet::latest(&op, "audit")?;
     let w = packet::archive(&op, &audit, packet_name)?;
     ctx.ok("archive packet written");

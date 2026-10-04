@@ -17,6 +17,9 @@ path = "src/main.rs"
 default = ["adapters"]
 # Without this feature the binary can verify records but cannot run tools.
 adapters = ["dep:lcoat-adapters"]
+# Crash points (LCOAT_TEST_CRASH_AT) in the binary, for the crash-injection
+# tests only. Never enabled in a release build.
+test-support = ["lcoat-core/test-support"]
 
 [dependencies]
 lcoat-format = { path = "../lcoat-format" }

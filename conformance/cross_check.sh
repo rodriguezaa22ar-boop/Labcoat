@@ -26,7 +26,7 @@ fail=0
 notyet=0
 
 echo "== stage 0: golden hashes (cargo test) =="
-( cd "$HERE" && out="$(cargo test --workspace 2>&1)" && echo "  $(echo "$out" | grep -c 'test result: ok') suites ok, $(echo "$out" | grep -oE '^test result: ok\. [0-9]+' | awk '{s+=$4} END {print s}') tests" ) || fail=1
+( cd "$HERE" && out="$(cargo test --workspace --features lcoat/test-support 2>&1)" && echo "  $(echo "$out" | grep -c 'test result: ok') suites ok, $(echo "$out" | grep -oE '^test result: ok\. [0-9]+' | awk '{s+=$4} END {print s}') tests" ) || fail=1
 
 echo "== build the three implementations =="
 RS="$(mktemp -d)/lcoat"; ( cd "$HERE" && cargo build --quiet -p lcoat && cp target/debug/lcoat "$RS" )
@@ -57,6 +57,10 @@ echo "== stage 1: read-only conformance (tamper verdicts + byte-identical output
 if "$RS" help 2>/dev/null | grep -q "^  lcoat op verify"; then
   ( cd "$HERE" && ATLAS_REPO="$ATLAS_REPO" conformance/tamper.sh check "$RS" LCOAT_ROOT 2>&1 | tail -1 ) || fail=1
   ( cd "$HERE" && ATLAS_REPO="$ATLAS_REPO" GO_PROJECT="$GO_PROJECT" conformance/readonly_diff.sh "$RS" 2>&1 | tail -2 ) || fail=1
+  # Format 1.1 tamper cases: what this build catches that the oracle and Lite cannot.
+  if "$RS" help 2>/dev/null | grep -q "^  lcoat op start"; then
+    ( cd "$HERE" && ATLAS_REPO="$ATLAS_REPO" GO_PROJECT="$GO_PROJECT" conformance/tamper_rust.sh "$RS" 2>&1 | tail -1 ) || fail=1
+  fi
 else
   echo "  NOT YET (phase 1): read-only commands not implemented in Rust"; notyet=1
 fi

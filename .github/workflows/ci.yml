@@ -23,6 +23,10 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --locked
       - run: cargo test --workspace --locked --no-default-features
+      # Crash-injection tests need the crash points compiled in.
+      - run: cargo test --workspace --locked --features lcoat/test-support
+      # Format 1.1 tamper cases that only this build can catch (no shell needed).
+      - run: conformance/tamper_rust.sh target/debug/lcoat
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
@@ -58,6 +62,8 @@ jobs:
       - run: cargo build --release --locked --target ${{ matrix.target }} -p lcoat
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
+      # A release binary carries no crash points: the test hook must be compiled out.
+      - run: '! grep -q "injected crash" target/${{ matrix.target }}/release/lcoat'
       - run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/lcoat dist/lcoat-${{ matrix.target }}

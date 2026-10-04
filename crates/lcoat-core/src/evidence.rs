@@ -240,6 +240,7 @@ pub fn add(op: &Operation<Active>, p: &AddParams) -> Result<Record> {
 
     let sum = Sha256Hex::of_file(&p.source)?;
     let bytes = copy_private_new(&p.source, &destination)?;
+    crate::crash::point("evidence.copied");
     let copied = Sha256Hex::of_file(&destination)?;
     if copied != sum {
         fail!("evidence copy integrity check failed");
@@ -268,6 +269,7 @@ pub fn add(op: &Operation<Active>, p: &AddParams) -> Result<Record> {
             .unwrap_or_default(),
     };
     ndjson::append(&index_file(&op.dir), &rec.to_object())?;
+    crate::crash::point("evidence.indexed");
     ndjson::append(
         &manifest_file(&op.dir),
         &ManifestEntry {

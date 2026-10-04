@@ -560,6 +560,7 @@ pub fn add(op: &Operation<Active>, p: &AddParams) -> Result<Finding> {
     mkdir_private(&root)?;
     let id = next_id(&root, "finding");
     mkdir_private(&root.join(&id))?;
+    crate::crash::point("finding.claimed");
     let f = Finding {
         id: id.clone(),
         operation: op.slug.clone(),
@@ -577,6 +578,7 @@ pub fn add(op: &Operation<Active>, p: &AddParams) -> Result<Finding> {
         ..Default::default()
     };
     ndjson::append(&index_file(&op.dir), &f.to_add_object())?;
+    crate::crash::point("finding.indexed");
     op.append_ledger(
         "finding.recorded",
         Tier::ReadOnly.capability(),
