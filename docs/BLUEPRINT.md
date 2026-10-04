@@ -199,12 +199,12 @@ What the first campaign found, all fixed with a unit test and a regression input
 
 ### Field run 1 (2026-10-04, operator's Fedora lab server)
 
-Two operations run by the operator with the CI-built binary: `local-baseline` (closed) and `fedora-baseline` (active, two open findings). On both, `ledger chain-verify`, `evidence verify` and the trust chain's ledger and artifact lines report verified (3 and 4 artifacts checked, no problems). Not yet recorded: the final `Trust Chain Status` line of `op trust-chain --strict`, and loading the Lite 0.1.4 operations on astra.
+Two operations run by the operator with the CI-built binary: `local-baseline` (closed, one accepted risk) and `fedora-baseline` (active, two open findings). On both, `ledger chain-verify` reports `verified` and `evidence verify` reports `verified` (3 and 4 artifacts, no problems). For `local-baseline`, `op trust-chain --strict` shows closeout, audit and archive packets verified, evidence artifacts verified, ledger chain verified, close readiness `ready`, and **Trust Chain Status `incomplete`**, with the next step "Generate an accepted-risk review packet before final archive review." That is the phase-3 gap below, met in the field. Not yet recorded: loading the Lite 0.1.4 operations on astra.
 
-The two findings were explained, not fixed: rsyslog listening on 514 on all addresses, reachable over Tailscale because firewalld puts the tailnet interface in the trusted zone; nginx on 80 and a dashboard on 8080 bound to the Tailscale address. They are the first real test of the accepted-risk path, and it found two problems:
+The `fedora-baseline` findings were explained, not fixed: rsyslog listening on 514 on all addresses, reachable over Tailscale because firewalld puts the tailnet interface in the trusted zone; nginx on 80 and a dashboard on 8080 bound to the Tailscale address. The accepted-risk path found two problems:
 
 - **`finding accept --expires 90d` stored the text `90d`.** The expiry check compares dates as text, so that acceptance would never have expired. Fixed: `finding accept` takes the same forms as `approval grant` (date, timestamp, `Nh`, `Nd`) through one checked parser (`clock::parse_expiry`, which also closed an overflow on huge counts), stores the instant, and refuses anything else or a past date. Fuzz target `expiry` added.
-- **Accepting a risk blocks a clean close.** Readiness wants an accepted-risk review packet after any acceptance, and `finding review-packet` is not built yet, so `fedora-baseline` cannot reach `ready` by accepting its findings. This moves `finding review-packet` to the top of phase 3.
+- **An operation with an accepted risk can close but never reach a `current` trust chain.** Close readiness is `ready` and every packet verifies, but the trust chain stays `incomplete` (and `--strict` fails) until an accepted-risk review packet exists, and `finding review-packet` is not built yet. This moves `finding review-packet` to the top of phase 3.
 
 - **Not yet, carried to phase 3:** `evidence bundle`, `finding review-packet`, `lcoat doctor`, field-by-field `--json` parity with the shell's objects, the field re-run on astra.
 
