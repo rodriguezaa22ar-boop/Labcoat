@@ -29,11 +29,14 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+pub mod approval;
 pub mod chain;
 pub mod error;
 pub mod evidence;
 pub mod findings;
+pub mod history;
 pub mod ledger;
+pub mod lock;
 pub mod metadata;
 pub mod operation;
 pub mod packet;

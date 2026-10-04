@@ -77,18 +77,9 @@ impl Record {
     }
 }
 
-/// Write bytes to `path` creating it with mode 0600 (owner read/write).
+/// Write bytes to `path` atomically with mode 0600 (see [`crate::fsutil`]).
 pub fn write_private(path: &Path, data: &[u8]) -> io::Result<()> {
-    use std::io::Write;
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    let mut f = opts.open(path)?;
-    f.write_all(data)
+    crate::fsutil::write_private(path, data)
 }
 
 /// Load `path` (or start empty when it does not exist), upsert, write back.

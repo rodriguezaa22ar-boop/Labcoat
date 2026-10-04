@@ -18,6 +18,7 @@
 //! | [`ndjson`] | 1 | done: line reader, latest-per-id, append |
 //! | [`clock`] | 1 | done: RFC 3339 UTC, `LCOAT_NOW` frozen clock |
 //! | [`ids`] | 1 | done: slugify, second-resolution IDs with `_02` suffixes |
+//! | [`fsutil`] | 2 | done: atomic 0600 writes, locked appends, private dirs |
 
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
@@ -25,6 +26,7 @@
 pub mod canonical;
 pub mod clock;
 pub mod envfile;
+pub mod fsutil;
 pub mod hash;
 pub mod ids;
 pub mod json;

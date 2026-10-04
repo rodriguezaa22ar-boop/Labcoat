@@ -47,11 +47,7 @@ fn list(ctx: &mut Ctx<'_>, root: &LabRoot) -> CmdResult {
         return Ok(());
     }
     for o in &ops {
-        let active = if Operation::is_active(root, &o.slug) {
-            "yes"
-        } else {
-            "no"
-        };
+        let active = if o.is_active() { "yes" } else { "no" };
         let target = if !o.target_label.is_empty() && o.target_label != o.target {
             &o.target_label
         } else {

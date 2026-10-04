@@ -6,7 +6,7 @@
 //! Writing appends one compact, insertion-ordered object per line, which is
 //! what the shell build's `jq -cn` produces.
 
-use std::io::{self, Write};
+use std::io;
 use std::path::Path;
 
 use crate::canonical::compact;
@@ -93,19 +93,12 @@ pub fn latest(records: &[Object]) -> Vec<Object> {
     by_id.into_iter().map(|(_, o)| o).collect()
 }
 
-/// Append one compact object plus newline to `path`, creating it 0600.
+/// Append one compact object plus newline to `path`, creating it 0600,
+/// under an exclusive lock (see [`crate::fsutil::append_locked`]).
 pub fn append(path: &Path, obj: &Object) -> io::Result<()> {
-    let mut opts = std::fs::OpenOptions::new();
-    opts.append(true).create(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    let mut f = opts.open(path)?;
     let mut line = compact(&Value::Object(obj.clone()));
     line.push(b'\n');
-    f.write_all(&line)
+    crate::fsutil::append_locked(path, &line)
 }
 
 impl Object {

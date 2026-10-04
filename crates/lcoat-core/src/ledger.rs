@@ -18,8 +18,8 @@ use lcoat_format::json::{Object, Value};
 use lcoat_format::ndjson;
 
 use crate::error::{Error, Result};
-use crate::fail;
 use crate::root::mkdir_private;
+use crate::{fail, user_err};
 
 /// The ledger file name inside an operation directory.
 pub const FILE_NAME: &str = "ledger.ndjson";
@@ -332,9 +332,17 @@ impl Ledger {
         read_path(&self.path)
     }
 
-    /// Append one event. An empty `ts` is filled with the current (possibly
-    /// frozen) clock. The operation directory is created 0700 if missing,
-    /// the file 0600, and the write happens under an exclusive lock.
+    /// Append one event with format 1.1 chain fields. An empty `ts` is
+    /// filled with the current (possibly frozen) clock. The operation
+    /// directory is created 0700 if missing and the file 0600.
+    ///
+    /// The whole operation (read the current head, hash, append) runs under
+    /// an exclusive lock on the ledger file, so two appenders cannot both
+    /// chain onto the same predecessor. `prev_hash` is the last event's
+    /// `event_hash` when the ledger is already chained, else `null`: a
+    /// ledger that began under the shell build or Lite becomes
+    /// [`crate::chain::ChainStatus::Partial`] from this event on, and is
+    /// never rewritten.
     pub fn append(&self, mut event: Event) -> Result<()> {
         if event.ts.is_empty() {
             event.ts = clock::timestamp();
@@ -343,22 +351,49 @@ impl Ledger {
             mkdir_private(dir)?;
         }
         let mut opts = std::fs::OpenOptions::new();
-        opts.append(true).create(true);
+        opts.read(true).append(true).create(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
             opts.mode(0o600);
         }
         let mut f = opts.open(&self.path)?;
-        let locked = f.lock().is_ok();
-        let mut line = compact(&Value::Object(event.to_object()));
-        line.push(b'\n');
-        let written = f.write_all(&line).and_then(|()| f.flush());
-        if locked {
-            let _ = f.unlock();
-        }
-        written?;
-        Ok(())
+        f.lock()?;
+        let result = (|| -> Result<()> {
+            let prev = Self::head_hash(&self.path)?;
+            let obj = crate::chain::link(event.to_object(), prev.as_ref());
+            let mut line = compact(&Value::Object(obj));
+            line.push(b'\n');
+            f.write_all(&line)?;
+            f.sync_data()?;
+            Ok(())
+        })();
+        let _ = f.unlock();
+        result
+    }
+
+    /// The `event_hash` of the last event, if the ledger is chained there.
+    fn head_hash(path: &Path) -> Result<Option<Sha256Hex>> {
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let Some(last) = lines_of(&bytes).filter(|l| !l.is_empty()).last() else {
+            return Ok(None);
+        };
+        let text = std::str::from_utf8(last)
+            .map_err(|_| user_err!("ledger tail is not UTF-8: {}", path.display()))?;
+        let obj = match Value::parse(text) {
+            Ok(Value::Object(o)) => o,
+            _ => fail!("ledger tail is not a JSON object: {}", path.display()),
+        };
+        Ok(match obj.get(crate::chain::EVENT_HASH) {
+            Some(Value::String(h)) => Some(Sha256Hex::parse(h).map_err(|_| {
+                user_err!("ledger tail has a malformed event_hash: {}", path.display())
+            })?),
+            _ => None,
+        })
     }
 }
 
@@ -389,10 +424,11 @@ mod tests {
         })
         .unwrap();
         let text = std::fs::read_to_string(l.path()).unwrap();
-        assert_eq!(
-            text,
-            "{\"ts\":\"2026-10-02T07:40:00Z\",\"event\":\"op.started\",\"op\":\"x\",\"target\":\"t\",\"capability\":\"read-only\",\"tool\":\"atlas\",\"status\":\"ok\",\"detail\":\"profile=default notes=\"}\n"
-        );
+        // v1 fields first, in the shell's order; the chain fields follow.
+        assert!(text.starts_with(
+            "{\"ts\":\"2026-10-02T07:40:00Z\",\"event\":\"op.started\",\"op\":\"x\",\"target\":\"t\",\"capability\":\"read-only\",\"tool\":\"atlas\",\"status\":\"ok\",\"detail\":\"profile=default notes=\",\"prev_hash\":null,\"event_hash\":\""
+        ), "{text}");
+        assert!(text.ends_with("\"}\n"));
         let events = l.events().unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].line, 1);
@@ -402,6 +438,52 @@ mod tests {
         // sha256 of the jq -cS form plus newline.
         assert_eq!(v.head_event_hash.as_str().len(), 64);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn appends_chain_and_continue_a_v1_ledger_partially() {
+        let dir = tmp("chain");
+        let l = Ledger::of(&dir);
+        let ev = |name: &str| Event {
+            ts: "2026-10-02T07:40:00Z".into(),
+            event: name.into(),
+            op: "x".into(),
+            target: "t".into(),
+            capability: "read-only".into(),
+            tool: "atlas".into(),
+            status: "ok".into(),
+            detail: String::new(),
+            line: 0,
+        };
+        l.append(ev("op.started")).unwrap();
+        l.append(ev("artifact.created")).unwrap();
+        let objs = read_objects(l.path()).unwrap();
+        assert_eq!(
+            crate::chain::verify(&objs),
+            crate::chain::ChainStatus::Verified
+        );
+        assert_eq!(objs[1].str("prev_hash"), objs[0].str("event_hash"));
+        // The shell's own checks still pass with the extra fields present.
+        assert_eq!(verify_operation_ledger(l.path()).unwrap().event_count, 2);
+
+        // A ledger that began under Lite (no chain fields) continues as Partial.
+        let dir2 = tmp("partial");
+        std::fs::create_dir_all(&dir2).unwrap();
+        std::fs::write(
+            file(&dir2),
+            "{\"ts\":\"t\",\"event\":\"op.started\",\"op\":\"o\",\"target\":\"x\",\"capability\":\"c\",\"tool\":\"a\",\"status\":\"ok\",\"detail\":\"d\"}\n",
+        )
+        .unwrap();
+        let l2 = Ledger::of(&dir2);
+        l2.append(ev("finding.recorded")).unwrap();
+        let objs = read_objects(l2.path()).unwrap();
+        assert_eq!(
+            crate::chain::verify(&objs),
+            crate::chain::ChainStatus::Partial { first_chained: 1 }
+        );
+        assert!(objs[1].get("prev_hash").is_some_and(Value::is_null));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
     }
 
     #[test]

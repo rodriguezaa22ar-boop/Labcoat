@@ -131,22 +131,7 @@ impl LabRoot {
     }
 }
 
-/// `mkdir -p` with mode 0700 on every created directory.
-pub fn mkdir_private(path: &Path) -> std::io::Result<()> {
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
-    builder.create(path)
-}
-
-/// Whether `path` is an existing regular file.
-pub fn file_exists(path: &Path) -> bool {
-    path.metadata().map(|m| m.is_file()).unwrap_or(false)
-}
+pub use lcoat_format::fsutil::{file_exists, mkdir_private};
 
 #[cfg(test)]
 mod tests {
