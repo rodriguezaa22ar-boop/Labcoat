@@ -117,7 +117,14 @@ fn run_adapter(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
     ctx.kv("duration_ms", &out.duration_ms.to_string());
     ctx.kv("evidence", &out.evidence_id);
     ctx.kv("sha256", &out.sha256);
-    if out.proposed.is_empty() {
+    for w in &out.warnings {
+        ctx.line(&format!("warning: {}", w.message));
+    }
+    if out.proposed.is_empty() && !out.warnings.is_empty() {
+        ctx.note(
+            "no proposed findings, and see the warning above: this run did not test the target",
+        );
+    } else if out.proposed.is_empty() {
         ctx.note("no proposed findings (confirm findings manually with finding add)");
     } else {
         ctx.line("");

@@ -16,7 +16,7 @@ use lcoat_core::fail;
 use lcoat_core::scope::ScopedTarget;
 use lcoat_core::tier::Tier;
 
-use crate::{Adapter, ProposedFinding};
+use crate::{Adapter, ProposedFinding, RunWarning};
 
 /// nmap, as Lab Coat runs it.
 pub struct Nmap;
@@ -409,6 +409,21 @@ impl Adapter for Nmap {
             .collect()
     }
 
+    fn warnings(&self, stdout: &[u8]) -> Vec<RunWarning> {
+        let text = String::from_utf8_lossy(stdout);
+        match hosts_up(&text) {
+            Some(0) => vec![RunWarning {
+                code: "host-down",
+                message: "nmap reports the host as down (0 hosts up), so no port was tested: this run is not evidence that ports are closed. If the host answers ping, a firewall is rejecting nmap's discovery probes; rerun with -Pn.".into(),
+            }],
+            None if !text.contains("<nmaprun") => vec![RunWarning {
+                code: "no-xml",
+                message: "nmap produced no XML report (it may have failed before scanning); check the captured output before trusting this run.".into(),
+            }],
+            _ => Vec::new(),
+        }
+    }
+
     /// Longer than the runner's default: in the field, `-sV` across 1,000
     /// ports took over three minutes.
     fn default_timeout(&self) -> Duration {
@@ -483,6 +498,21 @@ pub fn open_ports(xml: &str) -> Vec<OpenPort> {
         }
     }
     out
+}
+
+/// `<runstats><hosts up="N" ...>`: how many hosts nmap considered up, or
+/// `None` when the report has no run statistics (cut short, not nmap).
+pub fn hosts_up(xml: &str) -> Option<u32> {
+    let i = xml.find("<runstats>")?;
+    let rest = &xml[i..];
+    let j = rest.find("<hosts ")?;
+    let head = &rest[j..];
+    let head = &head[..head.find('>').unwrap_or(head.len())];
+    let up = attr(head, "up");
+    if up.is_empty() || !up.bytes().all(|b| b.is_ascii_digit()) || up.len() > 9 {
+        return None;
+    }
+    up.parse().ok()
 }
 
 /// Protocols nmap writes in `<port protocol=..>`.
@@ -636,6 +666,27 @@ mod tests {
                 "10.10.10.5"
             ]
         );
+    }
+
+    /// Field run 1: from a NAT'd VM, firewalld rejected nmap's unprivileged
+    /// discovery probes, nmap reported 0 hosts up in 80 ms, and the run
+    /// printed "no proposed findings" like a clean result.
+    #[test]
+    fn host_down_is_a_warning_not_a_clean_result() {
+        let down = r#"<?xml version="1.0"?><nmaprun scanner="nmap"><runstats><finished time="1791097585" summary="Nmap done at Sun Oct 4 07:06:25 2026; 1 IP address (0 hosts up) scanned in 0.08 seconds" elapsed="0.08"/><hosts up="0" down="1" total="1"/></runstats></nmaprun>"#;
+        assert_eq!(hosts_up(down), Some(0));
+        let w = Nmap.warnings(down.as_bytes());
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].code, "host-down");
+        assert!(w[0].message.contains("-Pn"));
+        let up = down.replace(r#"up="0" down="1""#, r#"up="1" down="0""#);
+        assert_eq!(hosts_up(&up), Some(1));
+        assert!(Nmap.warnings(up.as_bytes()).is_empty());
+        // No XML at all (nmap failed before writing a report).
+        assert_eq!(Nmap.warnings(b"Failed to open device")[0].code, "no-xml");
+        // A report cut short before run statistics: no claim either way.
+        assert!(Nmap.warnings(b"<nmaprun><host>").is_empty());
+        assert_eq!(hosts_up(r#"<runstats><hosts up="-1"/></runstats>"#), None);
     }
 
     /// Found by fuzz target `nmap_xml`: the scanned host chooses these

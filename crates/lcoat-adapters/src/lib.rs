@@ -46,6 +46,17 @@ pub struct ProposedFinding {
     pub detail: String,
 }
 
+/// Something about a run the operator must know before reading its result
+/// (field run 1: nmap reported the host down in 80 ms and the run looked
+/// like a clean "nothing open").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunWarning {
+    /// Short code recorded on `adapter.finished` as `warning=<code>`.
+    pub code: &'static str,
+    /// What it means and what to do, for the terminal.
+    pub message: String,
+}
+
 /// Contract every adapter implements.
 pub trait Adapter {
     /// Stable identifier, e.g. `"nmap"`.
@@ -57,6 +68,10 @@ pub trait Adapter {
     fn command(&self, target: &ScopedTarget, args: &[String]) -> Result<Vec<String>>;
     /// Findings proposed from captured stdout; empty when not parsed.
     fn parse(&self, stdout: &[u8]) -> Vec<ProposedFinding>;
+    /// Warnings about the captured output (coverage, not findings).
+    fn warnings(&self, _stdout: &[u8]) -> Vec<RunWarning> {
+        Vec::new()
+    }
     /// Hard timeout when the operator gives none.
     fn default_timeout(&self) -> std::time::Duration;
     /// One line for `adapter list`.

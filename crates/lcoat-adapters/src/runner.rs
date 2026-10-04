@@ -28,7 +28,7 @@ use lcoat_core::scope::ScopedTarget;
 use lcoat_core::tier::Tier;
 use lcoat_format::fsutil::{mkdir_private, write_private};
 
-use crate::{Adapter, ProposedFinding, lookup, vantage};
+use crate::{Adapter, ProposedFinding, RunWarning, lookup, vantage};
 
 /// Inputs to [`run`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,6 +69,8 @@ pub struct Outcome {
     pub vantage_addr: String,
     /// Findings the adapter proposes.
     pub proposed: Vec<ProposedFinding>,
+    /// Coverage warnings (e.g. nmap saw the host as down).
+    pub warnings: Vec<RunWarning>,
 }
 
 /// The only PATH a tool sees.
@@ -308,6 +310,10 @@ pub fn run(op: &Operation<Active>, p: &RunParams) -> Result<Outcome> {
     if captured.timed_out {
         detail.push_str(&format!(" timeout_s={}", timeout.as_secs()));
     }
+    let warnings = adapter.warnings(&captured.stdout);
+    for w in &warnings {
+        detail.push_str(&format!(" warning={}", w.code));
+    }
     op.append_event("adapter.finished", tier, name, status, &meta(detail)?)?;
 
     Ok(Outcome {
@@ -322,6 +328,7 @@ pub fn run(op: &Operation<Active>, p: &RunParams) -> Result<Outcome> {
         vantage: host,
         vantage_addr: addr,
         proposed: adapter.parse(&captured.stdout),
+        warnings,
     })
 }
 

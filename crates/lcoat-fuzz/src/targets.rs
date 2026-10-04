@@ -111,6 +111,17 @@ pub fn nmap_xml(data: &[u8]) -> u64 {
             assert!(v.chars().count() <= 128, "{field} longer than 128 chars");
         }
     }
+    let up = lcoat_adapters::nmap::hosts_up(&xml);
+    for w in Nmap.warnings(data) {
+        assert!(
+            matches!(w.code, "host-down" | "no-xml"),
+            "unknown warning code {}",
+            w.code
+        );
+        if w.code == "host-down" {
+            assert_eq!(up, Some(0));
+        }
+    }
     let proposed = Nmap.parse(data);
     assert_eq!(proposed.len(), ports.len());
     for f in &proposed {
@@ -665,6 +676,9 @@ pub static TARGETS: &[Target] = &[
             b"<host>",
             b"</host>",
             b"<ports>",
+            b"<runstats>",
+            b"<hosts up=\"0\" down=\"1\"/>",
+            b"up=\"",
         ],
         cost: 1,
     },
