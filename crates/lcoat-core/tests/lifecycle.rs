@@ -135,7 +135,7 @@ fn full_lifecycle_verifies_and_tampering_is_caught() {
     assert_eq!(st.accepted_count, 1);
     let reopened = findings::reopen(&op, &g.id, Some(m("vlan not isolated after all"))).unwrap();
     assert_eq!(reopened.status, "open");
-    findings::resolve(&op, &g.id, &[ev.id.clone()], None).unwrap();
+    findings::resolve(&op, &g.id, std::slice::from_ref(&ev.id), None).unwrap();
     assert_eq!(
         findings::latest(&op.dir, "")
             .unwrap()
