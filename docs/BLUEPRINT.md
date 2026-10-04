@@ -10,6 +10,19 @@ The strategy in one line: **upgrade the formats additively, so the shell build s
 
 Inputs: the Lite blueprint and go/no-go memo in `GO-project/docs`, the Go conformance fixtures (`learning-op-001`, the demo-site receipt chain, the nmap sample), the shell build pinned at `23ba2d2`, and the two field operations on the Fedora lab server that showed where Lite fell short.
 
+## Quality bar
+
+"Best version it can be" has to mean things a reviewer can check, or it means nothing. Every phase from 2 on is held to this list before it merges; anything not met is written down as a gap in this file, not quietly deferred.
+
+1. **Verdicts are never the writer's word.** Every file Lab Coat writes is verified by all three builds (`cross_check.sh` stage 2: nine writer/verifier pairs, every verifier on every root). A Lab Coat-only format addition must leave the shell and Lite verdicts unchanged and must make at least one Rust-only tamper fixture fail that passed before.
+2. **Rules are types, not reminders.** Each invariant in "What Rust buys" has a compile-fail test (`trybuild`-style, std-only) showing the forbidden program does not build. A reviewer should be able to try to write raw output into a packet and watch the compiler refuse.
+3. **Nothing on the write path can half-happen silently.** Multi-file mutations have a fixed order whose partial states are detectable by the verifiers (see "Transaction order" below); every file is written private (0600/0700) and atomically (temp file + rename) except the two append-only logs, which are `O_APPEND` under a lock; a lab root is locked for the duration of any mutating command so two `lcoat` processes cannot interleave.
+4. **No panics on operator input.** `clippy::unwrap_used` and `expect_used` are errors outside tests; every parser (envfile, NDJSON, JSON, packet anchors, nmap XML) has a fuzz target and a property test; every refusal message is tested by an integration test that provokes it.
+5. **Byte-identical where the oracle exists.** Output and files match the shell build byte for byte under the frozen clock; every intentional divergence is listed in "Read-only conformance" with a reason.
+6. **Honest about limits.** `--help`, the threat model and every verdict line say what was not evaluated (v1 pillars, authorization, completeness). A status word is never printed for something the build did not check.
+7. **Reproducible and signed.** `--locked` builds from a committed `Cargo.lock`, static binaries for linux-musl (x86_64, aarch64) and macOS (aarch64), `SHA256SUMS` and a minisign signature per release, signed tags. Zero runtime dependencies; any crate added later gets a one-line reason in "Dependencies".
+8. **Fast enough to be invisible.** Every command on a 10,000-event ledger finishes under 100 ms on a laptop; `evidence verify` streams hashes. Measured once per phase and recorded here, not assumed from the language.
+
 ## Goals and non-goals
 
 **Goals**
@@ -92,6 +105,63 @@ Types cannot prove the scanner's patterns are complete or that a hash covered th
 | Receipt signatures | optional `signature` (ed25519 over `receipt_hash`) + key id | receipts tied to an operator key | unknown keys ignored |
 
 Unchanged: env quoting, NDJSON field order, Markdown packet layouts, canonical form, IDs with `_02` suffixes, `atlas.*` schema IDs.
+
+## Phase 2 design, decided before code
+
+Phase 2 writes the files. These decisions are fixed now because changing a format after the field runs is the one thing this project cannot afford.
+
+### Lifecycle as types
+
+```text
+Operation::load(root, name) -> Loaded            Loaded::Active(Operation<Active>) | Loaded::Closed(Operation<Closed>)
+Operation::start(root, StartParams) -> Operation<Active>
+Operation<Active>  : add_evidence, add_finding, update_finding, run_adapter, write_report, write_handoff, close(Readiness) -> Operation<Closed>
+Operation<Closed>  : write_closeout, write_audit_packet, write_archive_packet, resume() -> Operation<Active>
+both               : everything read-only from phase 1
+```
+
+Packet constructors take the previous packet by reference (`write_audit_packet(&closeout)`), so the generation order report → handoff → close → closeout → audit → archive is enforced by the signatures, and the "later allowed events" the verifiers accept after a closeout are exactly the ones these methods can append. Writers take `MetadataOnly` for every free-text field (title, impact, recommendation, notes, detail), so the scanner runs because the call does not compile otherwise, not because a test checks it.
+
+### Transaction order and crash safety
+
+Each mutating command touches files in an order whose partial states a verifier reports as "not recorded" rather than as corruption:
+
+| Command | Order | If interrupted after step n |
+| --- | --- | --- |
+| `evidence add` | 1 copy artifact into `evidence/<id>/` (temp + rename) · 2 hash and compare · 3 append `evidence.ndjson` · 4 append manifest · 5 append ledger | n<3: orphan directory, no record, next ID gets `_02`; n=3,4: record without ledger event, readiness shows no `artifact.created`, report lists it; verifiers consistent |
+| `finding add` | 1 claim `findings/<id>/` · 2 append `findings.ndjson` · 3 append ledger | same shape |
+| `op start` | 1 create directories · 2 write `session.env` · 3 write snapshot · 4 append `op.started` · 5 history · 6 set active | n<4: `op list` shows it, ledger empty, `op verify` says missing ledger |
+| packets | 1 append `*.generated` event with the path · 2 render · 3 write file (temp + rename) · 4 history | event without file: verifiers say `missing`, exactly what the shell does today |
+| `op close` | 1 upsert `STATUS`/`CLOSED_AT` · 2 append readiness and `op.closed` · 3 history · 4 clear active | shell order, kept |
+
+All of these run under one advisory lock on `<op dir>/.lock` (and `state/atlas/.lock` for the active pointer and target registry) held for the whole command. The shell and Lite lock only the ledger line; this is the first build where two operators in one root cannot interleave an evidence copy with a packet render. The lock file is an empty file, ignored by every verifier.
+
+Atomic writes (temp file in the same directory, `fsync`, rename) apply to every whole-file write: env records, packets, reports, receipts. The two NDJSON indexes and the ledger stay append-only.
+
+### What the adapter layer is allowed to do
+
+- Arguments are parsed into enums (`NmapArg`, `ScriptArg`); a flag without a variant is a parse error, so there is no allowlist string to drift. Lite's nmap rules are the starting set: target from the scope snapshot only, no `-iL`, no `--script` outside a fixed safe list, no output-file flags (Lab Coat captures output itself), default timeout 600 s.
+- No shell. `std::process::Command` with argv, environment cleared to `PATH` and locale, stdin closed, working directory the run's temp dir.
+- Output is captured to `evidence/<id>/` as a file and hashed; nothing from it enters a ledger detail or packet except counts and the hash. The nmap XML parser produces metadata (open ports, service names) for the report and finding suggestions; the parser is fuzzed.
+- Vantage is recorded on every run: hostname and the source address `nmap` reports (or the default route address when a tool reports none), as `vantage=` tokens on `adapter.started` and fields on the evidence record. A scan of astra from astra and a scan from the Mac over Tailscale become distinguishable in the trail.
+- Tier is a property of the adapter and the arguments, not a flag the operator sets: `nmap -sn` is Tier 1, `-sV` is Tier 2, anything that parses to a NSE category outside `safe`/`default`/`discovery`/`version` does not parse at all.
+
+### Format 1.1 details fixed now
+
+- **Ledger chain:** as frozen in `lcoat-core::chain`. Every event Lab Coat appends carries `prev_hash`/`event_hash`; a ledger that starts under Lite and continues under Lab Coat is `Partial { first_chained }`, reported as such, never upgraded in place.
+- **Evidence manifest:** `evidence/manifest.ndjson`, one record per artifact `{id, path, sha256, bytes, recorded_at}`, appended with the index; its own hash goes into the closeout and archive `Evidence manifest:` slot the shell already verifies. This is the change that makes the shell catch an edited artifact.
+- **Relocatable paths:** packets keep the absolute path the shell expects and add `rel=<root-relative>` tokens on every anchor line. v1 verifiers ignore the token; Lab Coat's verifiers use it only when the absolute path is missing *and* the packet carries the token, so verdicts on v1 packets are unchanged and a Lab Coat root can be moved or restored from backup and still verify.
+- **Finding lifecycle:** `finding resolve|accept|reopen|note` append a full record with the same `id` (the readers already take the latest), plus `finding.updated` ledger events with the status transition in `detail`.
+- **Approvals:** `approvals.ndjson` records `{capability, target, status, reason, granted_by, granted_at, expires_at}`; `approval grant` requires a reason and an expiry, `approval list|revoke` exist, and the preflight honours only unexpired `approved` records. Phase 4 adds the signature; the record shape is fixed now so phase 4 is additive.
+- **`--json` everywhere:** every read-only command accepts `--json` and emits the shell's object where the shell has one (`atlas.operation_trust_chain.v1`, `atlas.receipt_replay.v1`, …) or a documented `lcoat.*.v1` object where it does not. Scripts and the case study stop parsing tables.
+
+### Things kept exactly as the shell has them, on purpose
+
+Second-resolution IDs with `_02` suffixes, `printf %q` env quoting, Markdown packet layouts, canonical JSON, `atlas.*` schema IDs and the `SOURCE_TOOL=atlas` marker, exit code 1 for every failure. Each is a compatibility promise to the records already on astra; none is worth breaking for tidiness.
+
+### Exit for phase 2
+
+`cross_check.sh` stage 2 clean (three-way scenario, normalized diff of every file, 27 verifier runs); two Rust-only tamper fixtures (rewritten middle event with the file hash recomputed, artifact edited after the manifest) fail only in Rust; the compile-fail suite passes; `evidence add` and `op close` survive an injected crash at every step in the table above with the verifiers reporting the documented state; the astra operations written by Lite 0.1.4 load, verify and can be resumed by Lab Coat without conversion.
 
 ## Command surface
 

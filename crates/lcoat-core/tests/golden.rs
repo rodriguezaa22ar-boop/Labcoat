@@ -2,7 +2,7 @@
 //! written by the Atlas shell build at `23ba2d2`). Values pinned here were
 //! computed independently with `jq -cS | sha256sum`.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};
 

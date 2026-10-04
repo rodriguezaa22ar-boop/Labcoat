@@ -12,7 +12,7 @@
 //! After 0.2.0: `nuclei`, `zap`. Never: exploit frameworks.
 
 #![forbid(unsafe_code)]
-#![cfg_attr(test, allow(clippy::unwrap_used))]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 /// Contract every adapter implements. Concrete adapters arrive in phase 2.
 pub trait Adapter {

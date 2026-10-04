@@ -20,7 +20,7 @@
 //! | [`ids`] | 1 | done: slugify, second-resolution IDs with `_02` suffixes |
 
 #![forbid(unsafe_code)]
-#![cfg_attr(test, allow(clippy::unwrap_used))]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod canonical;
 pub mod clock;

@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Day-0 exit check: reproduce the hashes the shell build and Lab Coat Lite
 //! recorded for the golden fixtures. If any of these fail, nothing built on
 //! this crate can be byte-compatible.

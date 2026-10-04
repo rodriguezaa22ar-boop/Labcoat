@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! CLI tests through the real binary (std only; no assert_cmd).
 
 use std::process::Command;

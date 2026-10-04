@@ -31,7 +31,10 @@ missing_docs = "warn"
 
 [workspace.lints.clippy]
 all = "warn"
+# Quality bar item 4: no panics on operator input. Tests opt out per file.
 unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
 
 [profile.release]
 strip = true
