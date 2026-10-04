@@ -278,10 +278,11 @@ impl Finding {
 /// first-seen order.
 pub fn latest(op_dir: &Path, target: &str) -> Result<Vec<Finding>> {
     let recs = ndjson::read_file(&index_file(op_dir))?;
+    let ids = crate::scope::identifiers(op_dir, target);
     Ok(ndjson::latest(&recs)
         .iter()
         .map(Finding::from_object)
-        .filter(|f| target.is_empty() || f.target == target)
+        .filter(|f| target.is_empty() || ids.contains(&f.target))
         .collect())
 }
 
@@ -545,6 +546,12 @@ pub fn add(op: &Operation<Active>, p: &AddParams) -> Result<Finding> {
         .as_ref()
         .map_or(op.target.as_str(), MetadataOnly::as_str)
         .to_owned();
+    // Recorded under the canonical name whichever identifier was typed.
+    let target = if op.matches_identifier(&target) {
+        op.target.clone()
+    } else {
+        target
+    };
 
     let _lock = op.lock()?;
     op.preflight(Tier::ReadOnly, TOOL_NAME, &target, "record finding")?

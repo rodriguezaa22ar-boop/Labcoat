@@ -494,3 +494,87 @@ fn finding_accept_stores_a_real_expiry() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Found in field run 1: adapter evidence recorded the target as typed (an
+/// address), and the readers matched the name only, so two of three scans
+/// vanished from `evidence list`, readiness and the report while `evidence
+/// verify` still counted them. Records are now written under the name, and
+/// readers (and the approval check) accept any identifier of the target,
+/// so records already on disk are counted too.
+#[test]
+fn any_target_identifier_lands_under_the_target() {
+    let root = fresh("ident");
+    ok(&lcoat(
+        &root,
+        &[
+            "target",
+            "add",
+            "local-vm",
+            "127.0.0.1",
+            "--scope-status",
+            "in-scope",
+        ],
+    ));
+    ok(&lcoat(&root, &["op", "start", "lb", "local-vm"]));
+    let src = root.join("scan.txt");
+    std::fs::write(&src, "PORT 22 open\n").unwrap();
+    let ev = ok(&lcoat(
+        &root,
+        &[
+            "evidence",
+            "add",
+            src.to_str().unwrap(),
+            "--target",
+            "127.0.0.1",
+        ],
+    ));
+    assert_eq!(kv(&ev, "target"), "local-vm");
+    let f = ok(&lcoat(
+        &root,
+        &["finding", "add", "ssh open", "--target", "127.0.0.1"],
+    ));
+    assert_eq!(kv(&f, "target"), "local-vm");
+    // A record already on disk under the address (what the field build wrote).
+    let idx = root.join("sessions/lb/evidence.ndjson");
+    let line = std::fs::read_to_string(&idx).unwrap();
+    let old = line
+        .trim_end()
+        .replace("\"target\":\"local-vm\"", "\"target\":\"127.0.0.1\"")
+        .replacen("\"id\":\"ev_", "\"id\":\"ev_old_", 1);
+    std::fs::write(&idx, format!("{line}{old}\n")).unwrap();
+    let list = ok(&lcoat(&root, &["evidence", "list"]));
+    assert_eq!(list.lines().count(), 2, "{list}");
+    assert!(ok(&lcoat(&root, &["op", "readiness"])).contains("Evidence Records: 2"));
+    if cfg!(feature = "adapters") {
+        // An approval granted for the name covers a tier-3 run typed by address.
+        ok(&lcoat(
+            &root,
+            &[
+                "approval",
+                "grant",
+                "safe-validation",
+                "--reason",
+                "lab",
+                "--expires",
+                "1d",
+            ],
+        ));
+        let a = ok(&lcoat(
+            &root,
+            &[
+                "adapter",
+                "run",
+                "script",
+                "127.0.0.1",
+                "--tier",
+                "3",
+                "--",
+                "/bin/echo",
+                "x",
+            ],
+        ));
+        assert_eq!(kv(&a, "tier"), "3");
+        assert!(ok(&lcoat(&root, &["op", "readiness"])).contains("Evidence Records: 3"));
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}

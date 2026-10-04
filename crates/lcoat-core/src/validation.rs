@@ -92,10 +92,11 @@ impl Plan {
 /// The newest record per ID, filtered to `target` when non-empty.
 pub fn latest(op_dir: &Path, target: &str) -> Result<Vec<Plan>> {
     let recs = ndjson::read_file(&index_file(op_dir))?;
+    let ids = crate::scope::identifiers(op_dir, target);
     Ok(ndjson::latest(&recs)
         .iter()
         .map(Plan::from_object)
-        .filter(|p| target.is_empty() || p.target == target)
+        .filter(|p| target.is_empty() || ids.contains(&p.target))
         .collect())
 }
 

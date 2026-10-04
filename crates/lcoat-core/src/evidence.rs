@@ -206,10 +206,17 @@ pub fn add(op: &Operation<Active>, p: &AddParams) -> Result<Record> {
         .classification
         .as_ref()
         .map_or("internal", MetadataOnly::as_str);
+    // Any identifier of the operation's target (name, address, label) is
+    // recorded as the canonical name, so every reader finds the record.
     let target = p
         .target
         .as_ref()
         .map_or(op.target.as_str(), MetadataOnly::as_str);
+    let target = if op.matches_identifier(target) {
+        op.target.as_str()
+    } else {
+        target
+    };
     let tool = if p.tool.is_empty() {
         TOOL_NAME
     } else {
@@ -303,10 +310,11 @@ pub fn add(op: &Operation<Active>, p: &AddParams) -> Result<Record> {
 /// first-seen order (the shell build's jq reduce/select).
 pub fn latest(op_dir: &Path, target: &str) -> Result<Vec<Record>> {
     let recs = ndjson::read_file(&index_file(op_dir))?;
+    let ids = crate::scope::identifiers(op_dir, target);
     Ok(ndjson::latest(&recs)
         .iter()
         .map(Record::from_object)
-        .filter(|r| target.is_empty() || r.target == target)
+        .filter(|r| target.is_empty() || ids.contains(&r.target))
         .collect())
 }
 

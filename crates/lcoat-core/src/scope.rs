@@ -243,6 +243,30 @@ fn or_unknown(s: &str) -> String {
     }
 }
 
+/// Every identifier of the operation's target (name, address, label) when
+/// `target` is one of them, else just `target`. Records store the target as
+/// it was typed in older builds (field run 1: an address on adapter
+/// evidence), so readers compare against this set, never one string.
+pub fn identifiers(op_dir: &Path, target: &str) -> Vec<String> {
+    let fallback = TargetInfo {
+        target: target.to_owned(),
+        ..TargetInfo::default()
+    };
+    let Ok(snap) = load_snapshot(op_dir, &fallback) else {
+        return vec![target.to_owned()];
+    };
+    if !snap.target_matches(target) {
+        return vec![target.to_owned()];
+    }
+    let mut ids = vec![snap.target.clone()];
+    for extra in [&snap.target_address, &snap.target_label] {
+        if !extra.is_empty() && !ids.contains(extra) {
+            ids.push(extra.clone());
+        }
+    }
+    ids
+}
+
 /// Load the snapshot as `atlas_scope_load_snapshot` does. `fallback`
 /// supplies the operation's own target fields for a snapshot-less
 /// operation.

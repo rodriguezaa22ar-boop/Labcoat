@@ -116,10 +116,13 @@ pub fn current(op_dir: &Path, capability: Tier, target: &str, now: &str) -> bool
     let Ok(records) = list(op_dir) else {
         return false;
     };
+    // A grant for the target's name covers a run typed with its address or
+    // label, and the other way round.
+    let ids = crate::scope::identifiers(op_dir, target);
     records
         .iter()
         .rev()
-        .find(|g| g.capability == capability.capability() && g.target == target)
+        .find(|g| g.capability == capability.capability() && ids.contains(&g.target))
         .is_some_and(|g| g.is_current(now))
 }
 
