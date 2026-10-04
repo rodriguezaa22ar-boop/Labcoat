@@ -513,6 +513,28 @@ fn build_template() -> Template {
     )
     .expect("finding");
     findings::resolve(&op, &f.id, &[], None).expect("resolve");
+    // An accepted risk and its review packet, so the review verifier and the
+    // trust chain's review line are fuzzed with the rest of the root.
+    let risk = findings::add(
+        &op,
+        &findings::AddParams {
+            title: Some(MetadataOnly::scan("Accepted exposure").expect("title")),
+            ..Default::default()
+        },
+    )
+    .expect("risk");
+    findings::accept(
+        &op,
+        &risk.id,
+        &findings::AcceptParams {
+            reason: MetadataOnly::scan("lab only").expect("reason"),
+            owner: None,
+            expires: Some("2099-01-01".into()),
+            evidence: Vec::new(),
+        },
+    )
+    .expect("accept");
+    lcoat_core::packet::review::write(&op, "", 30).expect("review packet");
     lcoat_core::report::write(&op, "").expect("report");
     lcoat_core::packet::handoff(&op, "").expect("handoff");
     let closed = op.close("ready", "fuzz").expect("close");
@@ -604,6 +626,10 @@ pub fn op_files(data: &[u8]) -> u64 {
                 }
             }
         }
+        if let Ok(p) = lcoat_core::packet::review::resolve_packet(&op, "") {
+            let _ = lcoat_core::packet::review::verify(&op, &p);
+        }
+        let _ = lcoat_core::packet::review::queue(&op, 30);
         let _ = lcoat_core::evidence::verify_artifacts(&op.dir);
         let _ = lcoat_core::evidence::manifest(&op.dir);
         let _ = lcoat_core::findings::rows(&op.dir, &op.target, 100);

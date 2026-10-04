@@ -5,6 +5,7 @@
 //! Phase 1 ships the verifiers and the trust chain. Rendering the packets is
 //! the phase 2 writer, whose text inputs will be [`crate::metadata::MetadataOnly`].
 
+pub mod review;
 pub mod trustchain;
 pub mod verify;
 pub mod write;

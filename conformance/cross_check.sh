@@ -60,6 +60,7 @@ if "$RS" help 2>/dev/null | grep -q "^  lcoat op verify"; then
   # Format 1.1 tamper cases: what this build catches that the oracle and Lite cannot.
   if "$RS" help 2>/dev/null | grep -q "^  lcoat op start"; then
     ( cd "$HERE" && ATLAS_REPO="$ATLAS_REPO" GO_PROJECT="$GO_PROJECT" conformance/tamper_rust.sh "$RS" 2>&1 | tail -1 ) || fail=1
+    ( cd "$HERE" && ATLAS_REPO="$ATLAS_REPO" conformance/review_diff.sh "$RS" 2>&1 | tail -1 ) || fail=1
   fi
 else
   echo "  NOT YET (phase 1): read-only commands not implemented in Rust"; notyet=1

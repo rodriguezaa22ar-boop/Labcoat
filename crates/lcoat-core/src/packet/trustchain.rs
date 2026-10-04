@@ -80,17 +80,27 @@ pub fn audit_verification_status<S: OpState>(
     }
 }
 
-/// The accepted-risk review packet: not required without accepted risks.
-/// Lab Coat phase 1 has no review packets of its own; one recorded by the
-/// shell build is taken as verified, as Lite does.
-pub fn review_verification_status(st: &State) -> (&'static str, String) {
+/// `atlas_archive_review_packet_verification_status`: not required without
+/// accepted risks; otherwise the latest recorded packet must exist and pass
+/// [`super::review::verify`].
+pub fn review_verification_status<S: OpState>(
+    op: &Operation<S>,
+    st: &State,
+) -> (&'static str, String) {
     if st.accepted_count == 0 {
         return ("not-required", "-".into());
     }
     if !st.review_packet.present() {
         return ("missing", "-".into());
     }
-    ("verified", st.review_packet.detail.clone())
+    let path = st.review_packet.detail.clone();
+    if !file_exists(Path::new(&path)) {
+        return ("missing", path);
+    }
+    match super::review::verify(op, &path) {
+        Ok(r) if r.problems == 0 => ("verified", path),
+        _ => ("attention-required", path),
+    }
 }
 
 /// `atlas_archive_status`.
@@ -167,7 +177,7 @@ pub fn collect_trust_chain<S: OpState>(op: &Operation<S>) -> Result<TrustChain> 
     let (closeout_verification, closeout_path, closeout_problems) =
         closeout_verification_status(op, &st);
     let (audit_verification, audit_path) = audit_verification_status(op, &st);
-    let (review_verification, review_path) = review_verification_status(&st);
+    let (review_verification, review_path) = review_verification_status(op, &st);
     let archive = archive_status(
         &st,
         closeout_verification,

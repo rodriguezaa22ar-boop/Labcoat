@@ -352,14 +352,14 @@ fn or_none(items: &[String]) -> String {
 }
 
 /// A non-negative decimal, or `None` (the shell's `atlas_closeout_numeric_token`).
-fn parse_count(s: &str) -> Option<usize> {
+pub(crate) fn parse_count(s: &str) -> Option<usize> {
     if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
     s.parse().ok()
 }
 
-fn prefix_matches(path: &str, n: usize, expected_sha: &str) -> bool {
+pub(crate) fn prefix_matches(path: &str, n: usize, expected_sha: &str) -> bool {
     ledger::prefix_sha256(Path::new(path), n)
         .map(|h| h.as_str() == expected_sha)
         .unwrap_or(false)
@@ -368,7 +368,7 @@ fn prefix_matches(path: &str, n: usize, expected_sha: &str) -> bool {
 /// Event names after the first `prefix` lines that are not in `allow`,
 /// sorted and unique (`tail -n +N | jq ... | sort -u`). A line that is not
 /// an object or has no `event` counts as `?`.
-fn disallowed_later(path: &str, prefix: usize, allow: &[&str]) -> Vec<String> {
+pub(crate) fn disallowed_later(path: &str, prefix: usize, allow: &[&str]) -> Vec<String> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return vec!["?".to_owned()];
     };

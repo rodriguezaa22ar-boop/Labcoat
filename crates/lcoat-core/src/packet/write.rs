@@ -101,7 +101,7 @@ fn change_line(label: &str, m: &Marker) -> String {
 }
 
 /// `rel=<path>` for a file under the lab root, else nothing.
-fn rel_token(root: &Path, path: &str) -> String {
+pub(super) fn rel_token(root: &Path, path: &str) -> String {
     match Path::new(path).strip_prefix(root) {
         Ok(rel) if !rel.as_os_str().is_empty() => {
             let r = rel.display().to_string();
@@ -164,7 +164,7 @@ fn manifest_line<S: State>(op: &Operation<S>) -> String {
     }
 }
 
-fn packet_path<S: State>(
+pub(super) fn packet_path<S: State>(
     op: &Operation<S>,
     subdir: &str,
     name: &str,
@@ -185,7 +185,7 @@ fn packet_path<S: State>(
     Ok(dir.join(format!("{slug}.md")))
 }
 
-fn finish(path: &Path, body: &str) -> Result<Written> {
+pub(super) fn finish(path: &Path, body: &str) -> Result<Written> {
     write_private(path, body.as_bytes())?;
     Ok(Written {
         path: path.to_path_buf(),
@@ -627,7 +627,7 @@ fn render_archive(op: &Operation<Closed>) -> Result<String> {
     let (report_at, report_path, report_sha) = marker_fields(&st.report);
     let (closeout_status, closeout_path, closeout_problems) = closeout_verification_status(op, &st);
     let (audit_status, audit_path) = audit_verification_status(op, &st);
-    let (review_status, review_path) = review_verification_status(&st);
+    let (review_status, review_path) = review_verification_status(op, &st);
     let arch_status = archive_status(&st, closeout_status, audit_status, review_status);
     let arch_next = archive_next_step(&st, closeout_status, audit_status, review_status);
 

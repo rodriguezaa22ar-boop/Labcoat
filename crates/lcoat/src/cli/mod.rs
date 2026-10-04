@@ -70,6 +70,9 @@ pub const USAGE: &str = "usage:
   lcoat finding reopen <id> [--note text]
   lcoat finding note <id> <text>
   lcoat finding list [operation]
+  lcoat finding review-queue [--op operation] [--within days]
+  lcoat finding review-packet [--op operation] [--within days] [packet-name]
+  lcoat finding review-verify [--op operation] [packet]
   lcoat adapter list
   lcoat adapter run <adapter> <target> [--timeout seconds] [--] [tool args...]
   lcoat ledger verify <ledger-file|-> [--json]

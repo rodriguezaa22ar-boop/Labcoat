@@ -1,7 +1,9 @@
-//! `finding add|resolve|accept|reopen|note|list`.
+//! `finding add|resolve|accept|reopen|note|list|review-queue|review-packet|review-verify`.
 
 use lcoat_core::findings::{self, AcceptParams, AddParams, Finding, Update};
 use lcoat_core::metadata::MetadataOnly;
+use lcoat_core::operation::Operation;
+use lcoat_core::packet::review;
 
 use super::{
     CmdResult, Ctx, fail, load_active, load_read_only_op, metadata, mutable_root, need_args,
@@ -11,7 +13,9 @@ use super::{
 /// Dispatch `finding <verb>`.
 pub fn run(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
     let Some((verb, rest)) = args.split_first() else {
-        return Err(fail("finding add|resolve|accept|reopen|note|list"));
+        return Err(fail(
+            "finding add|resolve|accept|reopen|note|list|review-queue|review-packet|review-verify",
+        ));
     };
     match verb.as_str() {
         "add" => add(ctx, rest),
@@ -20,6 +24,9 @@ pub fn run(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
         "reopen" => reopen(ctx, rest),
         "note" => note(ctx, rest),
         "list" => list(ctx, rest),
+        "review-queue" => review_queue(ctx, rest),
+        "review-packet" => review_packet(ctx, rest),
+        "review-verify" => review_verify(ctx, rest),
         other => Err(fail(format!("unknown finding command: {other}"))),
     }
 }
@@ -232,4 +239,125 @@ fn list(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
         ctx.line(&row(f));
     }
     Ok(())
+}
+
+// --- accepted-risk review ------------------------------------------------------
+
+/// `[--op operation] [--within days] [name]`: the operation (active unless
+/// named; a closed one can be reviewed without resuming it), the window,
+/// and at most one positional argument.
+struct ReviewArgs {
+    op: String,
+    window: u32,
+    name: String,
+}
+
+fn review_args(
+    args: &[String],
+    usage: &str,
+    takes_window: bool,
+) -> Result<ReviewArgs, super::CliError> {
+    let mut r = ReviewArgs {
+        op: String::new(),
+        window: review::DEFAULT_WINDOW,
+        name: String::new(),
+    };
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--op" | "--operation" => {
+                r.op = option(args, i, usage)?.to_owned();
+                i += 2;
+            }
+            "--within" | "--window" if takes_window => {
+                r.window = review::parse_window(option(args, i, usage)?)?;
+                i += 2;
+            }
+            a if a.starts_with('-') => {
+                return Err(fail(format!("unknown option: {a}\nusage: {usage}")));
+            }
+            a => {
+                if !r.name.is_empty() {
+                    return Err(fail(format!("usage: {usage}")));
+                }
+                r.name = a.to_owned();
+                i += 1;
+            }
+        }
+    }
+    Ok(r)
+}
+
+fn review_queue(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
+    const USAGE: &str = "finding review-queue [--op operation] [--within days]";
+    let a = review_args(args, USAGE, true)?;
+    if !a.name.is_empty() {
+        return Err(fail(format!("usage: {USAGE}")));
+    }
+    let root = root()?;
+    let op = Operation::load_named_or_active(&root, &a.op)?;
+    let q = review::queue(&op, a.window)?;
+    ctx.heading("Accepted Risk Review Queue");
+    ctx.rule();
+    ctx.kv("Operation", &op.name);
+    ctx.kv("Target", &op.target);
+    ctx.kv("Today", &q.today);
+    ctx.kv("Review Window", &format!("{} days", q.window));
+    ctx.kv("Due By", &q.due_by);
+    ctx.kv("Expired", &q.count("expired").to_string());
+    ctx.kv("Due Soon", &q.count("due-soon").to_string());
+    ctx.kv("No Expiry", &q.count("no-expiry").to_string());
+    ctx.kv("Current", &q.count("current").to_string());
+    ctx.rule();
+    if q.rows.is_empty() {
+        ctx.note("no accepted risks recorded");
+        return Ok(());
+    }
+    for l in q.table() {
+        ctx.line(&l);
+    }
+    Ok(())
+}
+
+fn review_packet(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
+    const USAGE: &str = "finding review-packet [--op operation] [--within days] [packet-name]";
+    let a = review_args(args, USAGE, true)?;
+    let root = mutable_root()?;
+    let op = Operation::load_named_or_active(&root, &a.op)?;
+    let w = review::write(&op, &a.name, a.window)?;
+    ctx.ok("accepted-risk review packet written");
+    ctx.kv("review_packet", &w.path().display().to_string());
+    if !op.is_active() {
+        ctx.note(&format!(
+            "operation is closed: regenerate the audit and archive packets so they include this review (lcoat op audit-packet {0}, then lcoat op archive-packet {0})",
+            op.slug
+        ));
+    }
+    Ok(())
+}
+
+fn review_verify(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
+    const USAGE: &str = "finding review-verify [--op operation] [packet]";
+    let a = review_args(args, USAGE, false)?;
+    let root = root()?;
+    let op = Operation::load_named_or_active(&root, &a.op)?;
+    let path = review::resolve_packet(&op, &a.name)?;
+    let r = review::verify(&op, &path)?;
+    ctx.heading("Accepted Risk Review Packet Verification");
+    ctx.rule();
+    ctx.kv("Operation", &op.name);
+    ctx.kv("Packet", &r.packet);
+    ctx.rule();
+    ctx.line(&format!("{:<20} {:<14} {}", "ARTIFACT", "STATUS", "DETAIL"));
+    for (artifact, status, detail) in &r.rows {
+        ctx.line(format!("{artifact:<20} {status:<14} {detail}").trim_end());
+    }
+    ctx.rule();
+    ctx.kv("Verification Status", r.status);
+    ctx.kv("Verification Problems", &r.problems.to_string());
+    if r.problems > 0 {
+        Err(super::CliError::Exit(1))
+    } else {
+        Ok(())
+    }
 }

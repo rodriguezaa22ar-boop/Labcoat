@@ -683,3 +683,108 @@ fn a_timed_out_run_says_it_is_incomplete() {
     assert!(!all.contains("confirm findings manually"), "{all}");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Field run 1: `local-baseline` closed `ready` with every packet verified
+/// but stayed `incomplete` because its accepted risk had no review packet.
+/// Now: review the closed operation, regenerate audit and archive, and the
+/// trust chain is current; change a finding afterwards and the review
+/// packet stops verifying.
+#[test]
+fn accepted_risk_review_completes_the_trust_chain() {
+    let root = fresh("review");
+    ok(&lcoat(
+        &root,
+        &[
+            "target",
+            "add",
+            "local-vm",
+            "127.0.0.1",
+            "--scope-status",
+            "in-scope",
+        ],
+    ));
+    ok(&lcoat(
+        &root,
+        &["op", "start", "local-baseline", "local-vm"],
+    ));
+    let src = root.join("scan.txt");
+    std::fs::write(&src, "PORT 22 open\n").unwrap();
+    ok(&lcoat(&root, &["evidence", "add", src.to_str().unwrap()]));
+    let id = kv(
+        &ok(&lcoat(
+            &root,
+            &["finding", "add", "ssh on loopback", "--severity", "low"],
+        )),
+        "id",
+    );
+    ok(&lcoat(
+        &root,
+        &[
+            "finding",
+            "accept",
+            &id,
+            "--reason",
+            "lab loopback only",
+            "--owner",
+            "anthony",
+            "--expires",
+            "90d",
+        ],
+    ));
+    let q = ok(&lcoat(&root, &["finding", "review-queue"]));
+    assert!(
+        q.contains("Current: 1") && q.contains("reason=lab loopback only"),
+        "{q}"
+    );
+    ok(&lcoat(&root, &["op", "report"]));
+    ok(&lcoat(&root, &["op", "handoff"]));
+    ok(&lcoat(&root, &["op", "close"]));
+    for c in ["closeout", "audit-packet", "archive-packet"] {
+        ok(&lcoat(&root, &["op", c, "local-baseline"]));
+    }
+    let tc = lcoat(&root, &["op", "trust-chain", "local-baseline", "--strict"]);
+    assert!(!tc.status.success());
+    assert!(
+        String::from_utf8_lossy(&tc.stdout).contains("Generate an accepted-risk review packet")
+    );
+
+    // The fix, on the closed operation.
+    let w = ok(&lcoat(
+        &root,
+        &["finding", "review-packet", "--op", "local-baseline"],
+    ));
+    assert!(w.contains("lcoat op audit-packet local-baseline"), "{w}");
+    let v = ok(&lcoat(
+        &root,
+        &["finding", "review-verify", "--op", "local-baseline"],
+    ));
+    assert!(v.contains("Verification Status: verified"), "{v}");
+    for c in ["audit-packet", "archive-packet"] {
+        ok(&lcoat(&root, &["op", c, "local-baseline"]));
+    }
+    let tc = ok(&lcoat(
+        &root,
+        &["op", "trust-chain", "local-baseline", "--strict"],
+    ));
+    assert!(tc.contains("Trust Chain Status: current"), "{tc}");
+    assert!(tc.contains("Accepted Risk Review Packet: verified"), "{tc}");
+
+    // A finding edited after the review: the packet no longer verifies.
+    let idx = root.join("sessions/local-baseline/findings.ndjson");
+    let text = std::fs::read_to_string(&idx).unwrap();
+    std::fs::write(&idx, text.replace("lab loopback only", "lab loopback ONLY")).unwrap();
+    let e = lcoat(
+        &root,
+        &["finding", "review-verify", "--op", "local-baseline"],
+    );
+    assert!(!e.status.success());
+    assert!(String::from_utf8_lossy(&e.stdout).contains("Finding Index        changed"));
+    let tc =
+        String::from_utf8_lossy(&lcoat(&root, &["op", "trust-chain", "local-baseline"]).stdout)
+            .into_owned();
+    assert!(
+        tc.contains("Accepted Risk Review Packet: attention-required"),
+        "{tc}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
