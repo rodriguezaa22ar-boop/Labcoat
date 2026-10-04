@@ -515,6 +515,142 @@ pub fn hosts_up(xml: &str) -> Option<u32> {
     up.parse().ok()
 }
 
+/// What one nmap report says, as metadata: open ports, how many hosts
+/// were up, and which ports were probed per protocol (`<scaninfo
+/// services="22,80,1000-2000">`), so a comparison can tell "closed" from
+/// "never probed".
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScanSummary {
+    /// Open ports (validated, banners defanged).
+    pub ports: Vec<OpenPort>,
+    /// `<runstats><hosts up=..>`, when present.
+    pub hosts_up: Option<u32>,
+    /// Per protocol, the probed port ranges (inclusive).
+    pub scanned: Vec<(String, Vec<(u32, u32)>)>,
+}
+
+impl ScanSummary {
+    /// Whether `port`/`protocol` was probed: `None` when the report has no
+    /// scan information for that protocol.
+    pub fn covers(&self, protocol: &str, port: u32) -> Option<bool> {
+        self.scanned
+            .iter()
+            .find(|(p, _)| p == protocol)
+            .map(|(_, ranges)| ranges.iter().any(|(a, b)| (*a..=*b).contains(&port)))
+    }
+}
+
+/// Summarize an nmap XML report. Never fails; malformed parts are skipped.
+pub fn summarize(xml: &str) -> ScanSummary {
+    let mut scanned: Vec<(String, Vec<(u32, u32)>)> = Vec::new();
+    let mut rest = xml;
+    while let Some(i) = rest.find("<scaninfo ") {
+        let head = &rest[i..];
+        let end = head.find('>').unwrap_or(head.len());
+        let tag = &head[..end];
+        let protocol = attr(tag, "protocol");
+        let ranges = parse_services(&attr(tag, "services"));
+        if valid_protocol(&protocol) && !ranges.is_empty() {
+            match scanned.iter_mut().find(|(p, _)| *p == protocol) {
+                Some((_, r)) => r.extend(ranges),
+                None => scanned.push((protocol, ranges)),
+            }
+        }
+        rest = &head[end.max(1).min(head.len())..];
+    }
+    ScanSummary {
+        ports: open_ports(xml),
+        hosts_up: hosts_up(xml),
+        scanned,
+    }
+}
+
+/// `22,80,1000-2000` into inclusive ranges; anything invalid is dropped.
+/// At most 4096 ranges are kept (nmap writes far fewer).
+fn parse_services(v: &str) -> Vec<(u32, u32)> {
+    let num = |s: &str| -> Option<u32> {
+        if s.is_empty() || s.len() > 5 || !s.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        s.parse::<u32>().ok().filter(|n| *n <= 65_535)
+    };
+    v.split(',')
+        .filter_map(|part| match part.split_once('-') {
+            Some((a, b)) => Some((num(a)?, num(b)?)).filter(|(a, b)| a <= b),
+            None => num(part).map(|n| (n, n)),
+        })
+        .take(4096)
+        .collect()
+}
+
+/// One port's change between two scans.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PortChange {
+    /// `22/tcp`.
+    pub port: String,
+    /// `opened`, `closed`, `changed`, `unchanged`, `not-scanned` (open
+    /// before, not probed after) or `first-scanned` (open after, not
+    /// probed before).
+    pub change: &'static str,
+    /// Service before, or `-`.
+    pub before: String,
+    /// Service after, or `-`.
+    pub after: String,
+}
+
+fn label(p: &OpenPort) -> String {
+    let s = format!("{} {}", p.service, p.product);
+    let s = s.trim();
+    if s.is_empty() {
+        "open".to_owned()
+    } else {
+        s.to_owned()
+    }
+}
+
+/// Port-by-port comparison of two reports, by port number then protocol.
+pub fn compare(before: &ScanSummary, after: &ScanSummary) -> Vec<PortChange> {
+    let key = |p: &OpenPort| (p.port.parse::<u32>().unwrap_or(0), p.protocol.clone());
+    let mut keys: Vec<(u32, String)> = before
+        .ports
+        .iter()
+        .chain(after.ports.iter())
+        .map(key)
+        .collect();
+    keys.sort();
+    keys.dedup();
+    keys.into_iter()
+        .map(|(n, proto)| {
+            let find = |s: &ScanSummary| {
+                s.ports
+                    .iter()
+                    .find(|p| key(p) == (n, proto.clone()))
+                    .cloned()
+            };
+            let (b, a) = (find(before), find(after));
+            let (change, before_l, after_l) = match (&b, &a) {
+                (Some(b), Some(a)) if label(b) == label(a) => ("unchanged", label(b), label(a)),
+                (Some(b), Some(a)) => ("changed", label(b), label(a)),
+                (Some(b), None) if after.covers(&proto, n) == Some(false) => {
+                    ("not-scanned", label(b), "-".to_owned())
+                }
+                (Some(b), None) => ("closed", label(b), "-".to_owned()),
+                (None, Some(a)) if before.covers(&proto, n) == Some(false) => {
+                    ("first-scanned", "-".to_owned(), label(a))
+                }
+                (None, Some(a)) => ("opened", "-".to_owned(), label(a)),
+                (None, None) => ("unchanged", "-".to_owned(), "-".to_owned()),
+            };
+            PortChange {
+                port: format!("{n}/{proto}"),
+                change,
+                before: before_l,
+                after: after_l,
+            }
+        })
+        .collect()
+}
+
 /// Protocols nmap writes in `<port protocol=..>`.
 fn valid_protocol(p: &str) -> bool {
     matches!(p, "tcp" | "udp" | "sctp" | "ip")
@@ -687,6 +823,57 @@ mod tests {
         // A report cut short before run statistics: no claim either way.
         assert!(Nmap.warnings(b"<nmaprun><host>").is_empty());
         assert_eq!(hosts_up(r#"<runstats><hosts up="-1"/></runstats>"#), None);
+    }
+
+    /// Field run 1: three comparisons (LAN vs tailnet, before vs after a
+    /// firewall change) were done by eye. A port the second scan never
+    /// probed is `not-scanned`, not `closed`.
+    #[test]
+    fn scans_compare_port_by_port_and_respect_coverage() {
+        let report = |services: &str, ports: &[(&str, &str, &str)]| {
+            let mut x = format!(
+                r#"<nmaprun><scaninfo type="connect" protocol="tcp" numservices="9" services="{services}"/>"#
+            );
+            for (id, name, product) in ports {
+                x.push_str(&format!(r#"<port protocol="tcp" portid="{id}"><state state="open"/><service name="{name}" product="{product}"/></port>"#));
+            }
+            x.push_str(r#"<runstats><hosts up="1" down="0" total="1"/></runstats></nmaprun>"#);
+            summarize(&x)
+        };
+        let before = report(
+            "22,80,514,8080",
+            &[
+                ("22", "ssh", "OpenSSH"),
+                ("514", "shell", ""),
+                ("8080", "http", "a"),
+            ],
+        );
+        let after = report(
+            "22,80,514",
+            &[("22", "ssh", "OpenSSH"), ("80", "http", "nginx")],
+        );
+        assert_eq!(after.covers("tcp", 514), Some(true));
+        assert_eq!(after.covers("tcp", 8080), Some(false));
+        assert_eq!(after.covers("udp", 53), None);
+        let changes: Vec<(String, &str)> = compare(&before, &after)
+            .into_iter()
+            .map(|c| (c.port, c.change))
+            .collect();
+        assert_eq!(
+            changes,
+            vec![
+                ("22/tcp".to_owned(), "unchanged"),
+                ("80/tcp".to_owned(), "opened"),
+                ("514/tcp".to_owned(), "closed"),
+                ("8080/tcp".to_owned(), "not-scanned"),
+            ]
+        );
+        let svc = report("1-1024", &[("22", "ssh", "Dropbear")]);
+        assert_eq!(compare(&before, &svc)[0].change, "changed");
+        assert_eq!(
+            parse_services("1-10,x,20,30-25,99999"),
+            vec![(1, 10), (20, 20)]
+        );
     }
 
     /// Found by fuzz target `nmap_xml`: the scanned host chooses these

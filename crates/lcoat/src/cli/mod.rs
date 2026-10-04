@@ -64,6 +64,7 @@ pub const USAGE: &str = "usage:
   lcoat evidence add <path> [--kind kind] [--target target] [--classification label] [--redacted true|false]
   lcoat evidence list [operation]
   lcoat evidence verify [operation] [--json]
+  lcoat evidence diff <before-id> <after-id> [--op operation] [--json]
   lcoat finding add <title> [--level observed|inferred|validated] [--severity severity] [--confidence confidence] [--status status] [--impact text] [--recommendation text] [--evidence id]...
   lcoat finding resolve <id> [--evidence id]... [--note text]
   lcoat finding accept <id> --reason text [--owner owner] [--expires YYYY-MM-DD|timestamp|Nh|Nd] [--evidence id]...

@@ -111,6 +111,13 @@ pub fn nmap_xml(data: &[u8]) -> u64 {
             assert!(v.chars().count() <= 128, "{field} longer than 128 chars");
         }
     }
+    // A report compared with itself changes nothing; every port it lists
+    // is one it reports open (so `covers` cannot call it not-scanned).
+    let summary = lcoat_adapters::nmap::summarize(&xml);
+    for c in lcoat_adapters::nmap::compare(&summary, &summary) {
+        assert_eq!(c.change, "unchanged", "self-comparison changed {}", c.port);
+    }
+    let _ = summary.covers("tcp", 22);
     let up = lcoat_adapters::nmap::hosts_up(&xml);
     for w in Nmap.warnings(data) {
         assert!(
@@ -703,6 +710,8 @@ pub static TARGETS: &[Target] = &[
             b"</host>",
             b"<ports>",
             b"<runstats>",
+            b"<scaninfo type=\"connect\" protocol=\"tcp\" services=\"",
+            b"1-65535",
             b"<hosts up=\"0\" down=\"1\"/>",
             b"up=\"",
         ],

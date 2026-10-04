@@ -1,4 +1,4 @@
-//! `evidence add|list|verify`.
+//! `evidence add|list|verify|diff`.
 
 use std::path::PathBuf;
 
@@ -15,12 +15,13 @@ use super::{
 /// Dispatch `evidence <verb>`.
 pub fn run(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
     let Some((verb, rest)) = args.split_first() else {
-        return Err(fail("evidence add|list|verify"));
+        return Err(fail("evidence add|list|verify|diff"));
     };
     match verb.as_str() {
         "add" => add(ctx, rest),
         "list" => list(ctx, rest),
         "verify" => verify(ctx, rest),
+        "diff" => diff(ctx, rest),
         other => Err(fail(format!("unknown evidence command: {other}"))),
     }
 }
@@ -169,4 +170,195 @@ fn verify(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
     } else {
         Ok(())
     }
+}
+
+#[cfg(not(feature = "adapters"))]
+fn diff(_ctx: &mut Ctx<'_>, _args: &[String]) -> CmdResult {
+    Err(fail(
+        "evidence diff reads nmap reports; this build was made without the adapters feature",
+    ))
+}
+
+/// `evidence diff <before> <after> [--op operation] [--json]`: compare two
+/// captured nmap reports port by port. Read-only; both artifacts are
+/// re-hashed against their records first.
+#[cfg(feature = "adapters")]
+fn diff(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
+    use lcoat_adapters::nmap::{compare, summarize};
+    use lcoat_format::hash::Sha256Hex;
+
+    const USAGE: &str = "evidence diff <before-id> <after-id> [--op operation] [--json]";
+    let mut ids: Vec<&str> = Vec::new();
+    let mut op_name = "";
+    let mut json = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            "--op" | "--operation" => {
+                op_name = option(args, i, USAGE)?;
+                i += 2;
+            }
+            a if a.starts_with('-') => return Err(fail(format!("usage: {USAGE}"))),
+            a => {
+                ids.push(a);
+                i += 1;
+            }
+        }
+    }
+    let [before_id, after_id] = ids[..] else {
+        return Err(fail(format!("usage: {USAGE}")));
+    };
+    let root = root()?;
+    let op = Operation::load_named_or_active(&root, op_name)?;
+    let records = evidence::latest(&op.dir, "")?;
+    let load = |id: &str| -> Result<(evidence::Record, String), CliError> {
+        let Some(rec) = records.iter().find(|r| r.id == id).cloned() else {
+            return Err(fail(format!(
+                "unknown evidence id in operation '{}': {id}",
+                op.slug
+            )));
+        };
+        let full = op.dir.join(&rec.path);
+        if std::path::Path::new(&rec.path).is_absolute() || !full.is_file() {
+            return Err(fail(format!("evidence {id} is missing: {}", rec.path)));
+        }
+        let actual = Sha256Hex::of_file(&full).map_err(|e| fail(e.to_string()))?;
+        if actual.as_str() != rec.sha256 {
+            return Err(fail(format!(
+                "evidence {id} changed since capture (expected_sha={} actual_sha={}); run 'lcoat evidence verify' before comparing",
+                rec.sha256,
+                actual.as_str()
+            )));
+        }
+        let bytes = std::fs::read(&full).map_err(|e| fail(e.to_string()))?;
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        if !text.contains("<nmaprun") {
+            return Err(fail(format!(
+                "evidence {id} is not an nmap report (no <nmaprun>)"
+            )));
+        }
+        Ok((rec, text))
+    };
+    let (rb, tb) = load(before_id)?;
+    let (ra, ta) = load(after_id)?;
+    let (sb, sa) = (summarize(&tb), summarize(&ta));
+    let changes = compare(&sb, &sa);
+    let count = |c: &str| changes.iter().filter(|x| x.change == c).count();
+    let mut warnings = Vec::new();
+    for (id, s) in [(before_id, &sb), (after_id, &sa)] {
+        if s.hosts_up == Some(0) {
+            warnings.push(format!("{id}: nmap reported the host down (0 hosts up); nothing was tested in that run, so this comparison is not evidence of any change"));
+        }
+        if s.scanned.is_empty() {
+            warnings.push(format!("{id}: no scan coverage recorded (<scaninfo>); ports missing from it are shown as closed, not not-scanned"));
+        }
+    }
+    if rb.target != ra.target {
+        warnings.push(format!(
+            "the scans name different targets ({} and {}): this compares two vantages or addresses, not one host over time",
+            rb.target, ra.target
+        ));
+    }
+
+    if json {
+        let s = |v: &str| Value::String(v.to_owned());
+        let side = |r: &evidence::Record| {
+            let mut o = Object::new();
+            o.insert("id", s(&r.id));
+            o.insert("target", s(&r.target));
+            o.insert("created_at", s(&r.created_at));
+            o.insert("sha256", s(&r.sha256));
+            o.insert("vantage", s(&r.vantage));
+            o.insert("vantage_addr", s(&r.vantage_addr));
+            Value::Object(o)
+        };
+        let mut o = Object::new();
+        o.insert("schema_version", s("lcoat.evidence_diff.v1"));
+        o.insert("operation", s(&op.slug));
+        o.insert("before", side(&rb));
+        o.insert("after", side(&ra));
+        o.insert(
+            "changes",
+            Value::Array(
+                changes
+                    .iter()
+                    .map(|c| {
+                        let mut x = Object::new();
+                        x.insert("port", s(&c.port));
+                        x.insert("change", s(c.change));
+                        x.insert("before", s(&c.before));
+                        x.insert("after", s(&c.after));
+                        Value::Object(x)
+                    })
+                    .collect(),
+            ),
+        );
+        let mut counts = Object::new();
+        for c in [
+            "opened",
+            "closed",
+            "changed",
+            "unchanged",
+            "not-scanned",
+            "first-scanned",
+        ] {
+            counts.insert(c, Value::Number(count(c).to_string()));
+        }
+        o.insert("counts", Value::Object(counts));
+        o.insert(
+            "warnings",
+            Value::Array(warnings.iter().map(|w| s(w)).collect()),
+        );
+        let mut bytes = compact(&Value::Object(o));
+        bytes.push(b'\n');
+        ctx.raw(&bytes);
+        return Ok(());
+    }
+
+    let who = |r: &evidence::Record| {
+        let mut v = format!("{} target={} captured={}", r.id, r.target, r.created_at);
+        if !r.vantage.is_empty() {
+            v.push_str(&format!(" vantage={} {}", r.vantage, r.vantage_addr));
+        }
+        v
+    };
+    ctx.heading("Scan Comparison");
+    ctx.rule();
+    ctx.kv("Operation", &op.name);
+    ctx.kv("Before", &who(&rb));
+    ctx.kv("After", &who(&ra));
+    ctx.rule();
+    if changes.is_empty() {
+        ctx.note("no open ports in either scan");
+    } else {
+        ctx.line(&format!(
+            "{:<14} {:<12} {:<32} {}",
+            "CHANGE", "PORT", "BEFORE", "AFTER"
+        ));
+        for c in &changes {
+            ctx.line(&format!(
+                "{:<14} {:<12} {:<32} {}",
+                c.change, c.port, c.before, c.after
+            ));
+        }
+    }
+    ctx.rule();
+    for (label, c) in [
+        ("Opened", "opened"),
+        ("Closed", "closed"),
+        ("Service Changed", "changed"),
+        ("Unchanged", "unchanged"),
+        ("Not Scanned After", "not-scanned"),
+        ("First Scanned After", "first-scanned"),
+    ] {
+        ctx.kv(label, &count(c).to_string());
+    }
+    for w in &warnings {
+        ctx.line(&format!("warning: {w}"));
+    }
+    Ok(())
 }

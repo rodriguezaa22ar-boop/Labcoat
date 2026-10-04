@@ -788,3 +788,111 @@ fn accepted_risk_review_completes_the_trust_chain() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Field run 1, the tailnet scans before and after moving tailscale0 out of
+/// the trusted zone, compared by eye; now `evidence diff`. Tampered
+/// evidence, a non-nmap artifact and a host-down run are all called out.
+#[test]
+fn evidence_diff_compares_two_scans() {
+    if !cfg!(feature = "adapters") {
+        return;
+    }
+    let root = fresh("diff");
+    ok(&lcoat(
+        &root,
+        &[
+            "target",
+            "add",
+            "fedora-lab",
+            "100.71.57.96",
+            "--scope-status",
+            "in-scope",
+        ],
+    ));
+    ok(&lcoat(
+        &root,
+        &["op", "start", "fedora-baseline", "fedora-lab"],
+    ));
+    let services = "22,53,80,514,3000,3001,4330,5001,8080,8085,8096,9090,11434,40004,44321,44725";
+    let report = |open: &[(&str, &str)], up: u32| {
+        let mut x = format!(
+            r#"<?xml version="1.0"?><nmaprun><scaninfo type="connect" protocol="tcp" numservices="16" services="{services}"/>"#
+        );
+        for (p, svc) in open {
+            x.push_str(&format!(r#"<port protocol="tcp" portid="{p}"><state state="open"/><service name="{svc}"/></port>"#));
+        }
+        x.push_str(&format!(
+            r#"<runstats><hosts up="{up}" down="{}" total="1"/></runstats></nmaprun>"#,
+            1 - up
+        ));
+        x
+    };
+    let before = report(
+        &[
+            ("22", "ssh"),
+            ("53", "domain"),
+            ("80", "http"),
+            ("514", "shell"),
+            ("3000", "http"),
+            ("8080", "http"),
+            ("9090", "zeus-admin"),
+            ("11434", "http"),
+        ],
+        1,
+    );
+    let after = report(
+        &[
+            ("22", "ssh"),
+            ("80", "http"),
+            ("3000", "http"),
+            ("11434", "http"),
+        ],
+        1,
+    );
+    let add = |name: &str, body: &str| {
+        let p = root.join(name);
+        std::fs::write(&p, body).unwrap();
+        kv(
+            &ok(&lcoat(
+                &root,
+                &[
+                    "evidence",
+                    "add",
+                    p.to_str().unwrap(),
+                    "--kind",
+                    "adapter-output",
+                ],
+            )),
+            "id",
+        )
+    };
+    let b = add("before.txt", &before);
+    let a = add("after.txt", &after);
+    let out = ok(&lcoat(&root, &["evidence", "diff", &b, &a]));
+    assert!(out.contains("Closed: 4"), "{out}");
+    assert!(out.contains("Unchanged: 4"), "{out}");
+    assert!(out.contains("Opened: 0"), "{out}");
+    assert!(
+        out.lines()
+            .any(|l| l.starts_with("closed") && l.contains("514/tcp")),
+        "{out}"
+    );
+    let json = ok(&lcoat(&root, &["evidence", "diff", &b, &a, "--json"]));
+    assert!(
+        json.starts_with(r#"{"schema_version":"lcoat.evidence_diff.v1""#),
+        "{json}"
+    );
+
+    // A host-down run is flagged, not read as "everything closed".
+    let down = add("down.txt", &report(&[], 0));
+    let out = ok(&lcoat(&root, &["evidence", "diff", &b, &down]));
+    assert!(out.contains("host down"), "{out}");
+
+    // Not an nmap report; then a capture edited after the fact.
+    let notes = add("notes.txt", "just notes\n");
+    assert!(err(&lcoat(&root, &["evidence", "diff", &b, &notes])).contains("not an nmap report"));
+    let art = root.join(format!("sessions/fedora-baseline/evidence/{a}/after.txt"));
+    std::fs::write(&art, after.replace(r#"portid="3000""#, r#"portid="3001""#)).unwrap();
+    assert!(err(&lcoat(&root, &["evidence", "diff", &b, &a])).contains("changed since capture"));
+    let _ = std::fs::remove_dir_all(&root);
+}
