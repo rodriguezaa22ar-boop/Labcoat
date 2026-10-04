@@ -16,6 +16,7 @@ name = "lcoat-adapters"
 version = "0.2.0-dev"
 dependencies = [
  "lcoat-core",
+ "lcoat-format",
 ]
 
 [[package]]

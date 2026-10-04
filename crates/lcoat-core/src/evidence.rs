@@ -72,6 +72,10 @@ pub struct Record {
     pub classification: String,
     /// Whether a redaction was applied.
     pub redacted: bool,
+    /// Format 1.1: hostname the capture ran from (adapter runs).
+    pub vantage: String,
+    /// Format 1.1: source address the capture ran from (adapter runs).
+    pub vantage_addr: String,
 }
 
 impl Record {
@@ -89,6 +93,8 @@ impl Record {
             created_at: o.str("created_at").to_owned(),
             classification: o.str("classification").to_owned(),
             redacted: o.bool("redacted"),
+            vantage: o.str("vantage").to_owned(),
+            vantage_addr: o.str("vantage_addr").to_owned(),
         }
     }
 }
@@ -109,6 +115,12 @@ impl Record {
         o.insert("created_at", s(&self.created_at));
         o.insert("classification", s(&self.classification));
         o.insert("redacted", Value::Bool(self.redacted));
+        if !self.vantage.is_empty() {
+            o.insert("vantage", s(&self.vantage));
+        }
+        if !self.vantage_addr.is_empty() {
+            o.insert("vantage_addr", s(&self.vantage_addr));
+        }
         o
     }
 }
@@ -128,6 +140,8 @@ pub struct AddParams {
     pub redacted: bool,
     /// Ledger tool name; `atlas` when empty (adapters pass their name).
     pub tool: String,
+    /// Format 1.1 vantage (hostname, source address) for adapter captures.
+    pub vantage: Option<(MetadataOnly, MetadataOnly)>,
 }
 
 /// One format 1.1 manifest line.
@@ -242,6 +256,16 @@ pub fn add(op: &Operation<Active>, p: &AddParams) -> Result<Record> {
         created_at: clock::timestamp(),
         classification: classification.to_owned(),
         redacted: p.redacted,
+        vantage: p
+            .vantage
+            .as_ref()
+            .map(|(h, _)| h.as_str().to_owned())
+            .unwrap_or_default(),
+        vantage_addr: p
+            .vantage
+            .as_ref()
+            .map(|(_, a)| a.as_str().to_owned())
+            .unwrap_or_default(),
     };
     ndjson::append(&index_file(&op.dir), &rec.to_object())?;
     ndjson::append(

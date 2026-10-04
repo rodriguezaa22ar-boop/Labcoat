@@ -1,0 +1,609 @@
+//! The nmap adapter: typed arguments, tier from the arguments, XML parsed
+//! into proposed findings.
+//!
+//! The operator supplies flags only; the target address comes from the
+//! [`ScopedTarget`]. Every accepted flag is a variant of [`NmapArg`], so
+//! `-iL`, `-iR`, `-o*`, `--script` outside the safe categories, spoofing and
+//! evasion options, and bare positionals are all parse errors, not
+//! allowlist misses. The tier is derived: a host-discovery sweep (`-sn` with
+//! timing and verbosity only) is Tier 1; anything else that parses is
+//! Tier 2. Nothing here can parse to Tier 3 or above.
+
+use std::time::Duration;
+
+use lcoat_core::error::Result;
+use lcoat_core::fail;
+use lcoat_core::scope::ScopedTarget;
+use lcoat_core::tier::Tier;
+
+use crate::{Adapter, ProposedFinding};
+
+/// nmap, as Lab Coat runs it.
+pub struct Nmap;
+
+/// One accepted nmap argument.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NmapArg {
+    /// A flag that takes no value: `-sn`, `-sV`, `-Pn`, `-T4`, `--open`, ...
+    Bare(BareFlag),
+    /// `--top-ports N`
+    TopPorts(u32),
+    /// `--version-intensity 0..=9`
+    VersionIntensity(u8),
+    /// `--max-retries N`
+    MaxRetries(u32),
+    /// `--max-rate N`
+    MaxRate(u32),
+    /// `--host-timeout <n>[ms|s|m|h]`
+    HostTimeout(String),
+    /// `--exclude-ports <spec>`
+    ExcludePorts(String),
+    /// `--script <categories>`: `default`, `safe`, `discovery`, `version` only.
+    Script(Vec<ScriptCategory>),
+    /// `-p <spec>`
+    Ports(String),
+}
+
+/// Flags that take no value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(missing_docs)]
+pub enum BareFlag {
+    Sn,
+    Ss,
+    St,
+    Su,
+    Sv,
+    Sc,
+    A,
+    O,
+    F,
+    R,
+    Pn,
+    N,
+    Six,
+    V,
+    Vv,
+    Open,
+    Reason,
+    Traceroute,
+    VersionLight,
+    VersionAll,
+    T0,
+    T1,
+    T2,
+    T3,
+    T4,
+    T5,
+}
+
+impl BareFlag {
+    fn parse(a: &str) -> Option<Self> {
+        Some(match a {
+            "-sn" => Self::Sn,
+            "-sS" => Self::Ss,
+            "-sT" => Self::St,
+            "-sU" => Self::Su,
+            "-sV" => Self::Sv,
+            "-sC" => Self::Sc,
+            "-A" => Self::A,
+            "-O" => Self::O,
+            "-F" => Self::F,
+            "-r" => Self::R,
+            "-Pn" => Self::Pn,
+            "-n" => Self::N,
+            "-6" => Self::Six,
+            "-v" => Self::V,
+            "-vv" => Self::Vv,
+            "--open" => Self::Open,
+            "--reason" => Self::Reason,
+            "--traceroute" => Self::Traceroute,
+            "--version-light" => Self::VersionLight,
+            "--version-all" => Self::VersionAll,
+            "-T0" => Self::T0,
+            "-T1" => Self::T1,
+            "-T2" => Self::T2,
+            "-T3" => Self::T3,
+            "-T4" => Self::T4,
+            "-T5" => Self::T5,
+            _ => return None,
+        })
+    }
+
+    /// Flags that may accompany `-sn` without raising it above Tier 1.
+    fn passive(self) -> bool {
+        matches!(
+            self,
+            Self::Sn
+                | Self::N
+                | Self::Six
+                | Self::V
+                | Self::Vv
+                | Self::Reason
+                | Self::T0
+                | Self::T1
+                | Self::T2
+                | Self::T3
+                | Self::T4
+                | Self::T5
+        )
+    }
+}
+
+/// NSE categories that stay at Tier 2. `vuln`, `brute`, `exploit`,
+/// `intrusive`, `dos`, `malware`, `external`, `auth`, `broadcast` and named
+/// scripts do not parse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(missing_docs)]
+pub enum ScriptCategory {
+    Default,
+    Safe,
+    Discovery,
+    Version,
+}
+
+impl ScriptCategory {
+    fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "default" => Self::Default,
+            "safe" => Self::Safe,
+            "discovery" => Self::Discovery,
+            "version" => Self::Version,
+            _ => return None,
+        })
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Safe => "safe",
+            Self::Discovery => "discovery",
+            Self::Version => "version",
+        }
+    }
+}
+
+fn positive(v: &str, flag: &str) -> Result<u32> {
+    match v.parse::<u32>() {
+        Ok(n) if n > 0 => Ok(n),
+        _ => fail!("nmap adapter: invalid value for {flag}: {v:?}"),
+    }
+}
+
+fn non_negative(v: &str, flag: &str) -> Result<u32> {
+    match v.parse::<u32>() {
+        Ok(n) => Ok(n),
+        Err(_) => fail!("nmap adapter: invalid value for {flag}: {v:?}"),
+    }
+}
+
+/// nmap time specs: digits with an optional `ms`, `s`, `m`, `h` unit.
+fn duration(v: &str, flag: &str) -> Result<String> {
+    let num = v.trim_end_matches(['s', 'm', 'h']);
+    if num.is_empty()
+        || v.len() - num.len() > 2
+        || !num.bytes().all(|b| b.is_ascii_digit())
+        || num.parse::<u64>().is_err()
+    {
+        fail!("nmap adapter: invalid value for {flag}: {v:?}");
+    }
+    Ok(v.to_owned())
+}
+
+/// Port specs: digits, commas, dashes and `T:`/`U:` prefixes.
+fn port_spec(v: &str, flag: &str) -> Result<String> {
+    if v.is_empty()
+        || !v
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, ',' | '-' | ':' | 'T' | 'U'))
+    {
+        fail!("nmap adapter: invalid value for {flag}: {v:?}");
+    }
+    Ok(v.to_owned())
+}
+
+impl NmapArg {
+    /// Parse the operator's arguments. Values may follow the flag or be
+    /// joined with `=` (`--top-ports=100`, `-p22`).
+    pub fn parse_all(args: &[String]) -> Result<Vec<NmapArg>> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < args.len() {
+            let a = args[i].as_str();
+            if let Some(flag) = BareFlag::parse(a) {
+                out.push(NmapArg::Bare(flag));
+                i += 1;
+                continue;
+            }
+            let (name, joined): (&str, Option<&str>) = if let Some(rest) = a
+                .strip_prefix("-p")
+                .filter(|r| !r.is_empty() && !a.starts_with("--"))
+            {
+                ("-p", Some(rest))
+            } else if let Some((k, v)) = a.split_once('=').filter(|_| a.starts_with("--")) {
+                (k, Some(v))
+            } else {
+                (a, None)
+            };
+            let takes_value = matches!(
+                name,
+                "--top-ports"
+                    | "--version-intensity"
+                    | "--max-retries"
+                    | "--max-rate"
+                    | "--host-timeout"
+                    | "--exclude-ports"
+                    | "--script"
+                    | "-p"
+            );
+            if !takes_value {
+                if !a.starts_with('-') {
+                    fail!(
+                        "nmap adapter: positional argument {a:?} refused; the target comes from the operation scope"
+                    );
+                }
+                fail!(
+                    "nmap adapter: flag {a:?} is not accepted (allowed: scan type, timing, -p, --top-ports, --script default|safe|discovery|version, --open, --reason)"
+                );
+            }
+            let value: &str = match joined {
+                Some(v) => v,
+                None => {
+                    i += 1;
+                    match args.get(i) {
+                        Some(v) => v.as_str(),
+                        None => fail!("nmap adapter: {name} requires a value"),
+                    }
+                }
+            };
+            out.push(match name {
+                "--top-ports" => NmapArg::TopPorts(positive(value, name)?),
+                "--version-intensity" => match value.parse::<u8>() {
+                    Ok(n) if n <= 9 => NmapArg::VersionIntensity(n),
+                    _ => fail!("nmap adapter: invalid value for {name}: {value:?}"),
+                },
+                "--max-retries" => NmapArg::MaxRetries(non_negative(value, name)?),
+                "--max-rate" => NmapArg::MaxRate(positive(value, name)?),
+                "--host-timeout" => NmapArg::HostTimeout(duration(value, name)?),
+                "--exclude-ports" => NmapArg::ExcludePorts(port_spec(value, name)?),
+                "--script" => {
+                    let mut cats = Vec::new();
+                    for part in value.split(',') {
+                        match ScriptCategory::parse(part) {
+                            Some(c) => cats.push(c),
+                            None => fail!("nmap adapter: --script category {part:?} is not accepted (default, safe, discovery, version)"),
+                        }
+                    }
+                    if cats.is_empty() {
+                        fail!("nmap adapter: invalid value for --script: {value:?}");
+                    }
+                    NmapArg::Script(cats)
+                }
+                _ => NmapArg::Ports(port_spec(value, name)?),
+            });
+            i += 1;
+        }
+        Ok(out)
+    }
+
+    /// The argv form of this argument.
+    pub fn argv(&self) -> Vec<String> {
+        match self {
+            NmapArg::Bare(f) => vec![bare_str(*f).to_owned()],
+            NmapArg::TopPorts(n) => vec!["--top-ports".into(), n.to_string()],
+            NmapArg::VersionIntensity(n) => vec!["--version-intensity".into(), n.to_string()],
+            NmapArg::MaxRetries(n) => vec!["--max-retries".into(), n.to_string()],
+            NmapArg::MaxRate(n) => vec!["--max-rate".into(), n.to_string()],
+            NmapArg::HostTimeout(v) => vec!["--host-timeout".into(), v.clone()],
+            NmapArg::ExcludePorts(v) => vec!["--exclude-ports".into(), v.clone()],
+            NmapArg::Script(cats) => vec![
+                "--script".into(),
+                cats.iter()
+                    .map(|c| c.as_str())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ],
+            NmapArg::Ports(v) => vec!["-p".into(), v.clone()],
+        }
+    }
+
+    /// Tier of a parsed invocation: `-sn` with passive companions is Tier 1,
+    /// everything else Tier 2.
+    pub fn tier(args: &[NmapArg]) -> Tier {
+        let has_sn = args
+            .iter()
+            .any(|a| matches!(a, NmapArg::Bare(BareFlag::Sn)));
+        let passive = args.iter().all(|a| match a {
+            NmapArg::Bare(f) => f.passive(),
+            NmapArg::MaxRetries(_) | NmapArg::HostTimeout(_) | NmapArg::MaxRate(_) => true,
+            _ => false,
+        });
+        if has_sn && passive {
+            Tier::PassiveRecon
+        } else {
+            Tier::ActiveRecon
+        }
+    }
+}
+
+fn bare_str(f: BareFlag) -> &'static str {
+    match f {
+        BareFlag::Sn => "-sn",
+        BareFlag::Ss => "-sS",
+        BareFlag::St => "-sT",
+        BareFlag::Su => "-sU",
+        BareFlag::Sv => "-sV",
+        BareFlag::Sc => "-sC",
+        BareFlag::A => "-A",
+        BareFlag::O => "-O",
+        BareFlag::F => "-F",
+        BareFlag::R => "-r",
+        BareFlag::Pn => "-Pn",
+        BareFlag::N => "-n",
+        BareFlag::Six => "-6",
+        BareFlag::V => "-v",
+        BareFlag::Vv => "-vv",
+        BareFlag::Open => "--open",
+        BareFlag::Reason => "--reason",
+        BareFlag::Traceroute => "--traceroute",
+        BareFlag::VersionLight => "--version-light",
+        BareFlag::VersionAll => "--version-all",
+        BareFlag::T0 => "-T0",
+        BareFlag::T1 => "-T1",
+        BareFlag::T2 => "-T2",
+        BareFlag::T3 => "-T3",
+        BareFlag::T4 => "-T4",
+        BareFlag::T5 => "-T5",
+    }
+}
+
+impl Adapter for Nmap {
+    fn name(&self) -> &'static str {
+        "nmap"
+    }
+
+    fn classify(&self, args: &[String]) -> Result<Tier> {
+        Ok(NmapArg::tier(&NmapArg::parse_all(args)?))
+    }
+
+    /// `nmap <args> -oX - <address>`: XML on stdout, address last and from
+    /// the scope only.
+    fn command(&self, target: &ScopedTarget, args: &[String]) -> Result<Vec<String>> {
+        let parsed = NmapArg::parse_all(args)?;
+        let address = target.address();
+        if address.is_empty() || address.starts_with('-') {
+            fail!("nmap adapter: invalid target address {address:?}");
+        }
+        let mut argv = vec!["nmap".to_owned()];
+        for a in &parsed {
+            argv.extend(a.argv());
+        }
+        argv.push("-oX".into());
+        argv.push("-".into());
+        argv.push(address.to_owned());
+        Ok(argv)
+    }
+
+    fn parse(&self, stdout: &[u8]) -> Vec<ProposedFinding> {
+        let Ok(text) = std::str::from_utf8(stdout) else {
+            return Vec::new();
+        };
+        open_ports(text)
+            .into_iter()
+            .map(|p| {
+                let mut title = format!("Open {}/{}", p.protocol, p.port);
+                let svc = match (p.service.as_str(), p.product.as_str()) {
+                    ("", "") => String::new(),
+                    (s, "") => s.to_owned(),
+                    (s, prod) => format!("{s} {prod}").trim().to_owned(),
+                };
+                if !svc.is_empty() {
+                    title.push_str(&format!(" ({svc})"));
+                }
+                ProposedFinding {
+                    title,
+                    severity: "info",
+                    confidence: "high",
+                    detail: format!("nmap reported {}/{} open", p.port, p.protocol),
+                }
+            })
+            .collect()
+    }
+
+    /// Longer than the runner's default: in the field, `-sV` across 1,000
+    /// ports took over three minutes.
+    fn default_timeout(&self) -> Duration {
+        Duration::from_secs(600)
+    }
+
+    fn note(&self) -> &'static str {
+        "tier from arguments (-sn → 1, else 2); parses XML into proposed findings"
+    }
+}
+
+/// One open port from nmap XML.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OpenPort {
+    /// `tcp`/`udp`.
+    pub protocol: String,
+    /// Port number as printed.
+    pub port: String,
+    /// `service name=`.
+    pub service: String,
+    /// `service product=`.
+    pub product: String,
+}
+
+/// Extract open ports from nmap XML with a small, fuzz-tested tag scanner:
+/// `<port protocol=".." portid="..">` elements whose `<state state="open">`
+/// child says open, with the optional `<service name=".." product="..">`.
+/// Anything malformed is skipped; this never fails.
+pub fn open_ports(xml: &str) -> Vec<OpenPort> {
+    let mut out = Vec::new();
+    let mut rest = xml;
+    while let Some(start) = rest.find("<port ") {
+        let after = &rest[start..];
+        let end = after
+            .find("</port>")
+            .map(|e| e + "</port>".len())
+            .unwrap_or(after.len());
+        let element = &after[..end];
+        let head_end = element.find('>').unwrap_or(element.len());
+        let head = &element[..head_end];
+        let protocol = attr(head, "protocol");
+        let port = attr(head, "portid");
+        let state = element
+            .find("<state ")
+            .map(|i| attr(&element[i..], "state"))
+            .unwrap_or_default();
+        if state == "open" && !port.is_empty() {
+            let (service, product) = match element.find("<service ") {
+                Some(i) => {
+                    let s = &element[i..];
+                    let s = &s[..s.find("/>").or_else(|| s.find('>')).unwrap_or(s.len())];
+                    (attr(s, "name"), attr(s, "product"))
+                }
+                None => (String::new(), String::new()),
+            };
+            out.push(OpenPort {
+                protocol,
+                port,
+                service,
+                product,
+            });
+        }
+        rest = &after[end.min(after.len())..];
+        if end == 0 {
+            break;
+        }
+    }
+    out
+}
+
+/// The value of `name="..."` in a tag head, with the five XML entities
+/// decoded; empty when absent.
+fn attr(head: &str, name: &str) -> String {
+    let key = format!(" {name}=\"");
+    let Some(i) = head.find(&key) else {
+        return String::new();
+    };
+    let v = &head[i + key.len()..];
+    let Some(j) = v.find('"') else {
+        return String::new();
+    };
+    v[..j]
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn tiers_follow_the_arguments() {
+        let n = Nmap;
+        assert_eq!(n.classify(&args(&["-sn"])).unwrap(), Tier::PassiveRecon);
+        assert_eq!(
+            n.classify(&args(&["-sn", "-T4", "--max-retries", "2"]))
+                .unwrap(),
+            Tier::PassiveRecon
+        );
+        assert_eq!(
+            n.classify(&args(&["-sn", "-p", "22"])).unwrap(),
+            Tier::ActiveRecon
+        );
+        assert_eq!(
+            n.classify(&args(&["-sV", "--top-ports=1000"])).unwrap(),
+            Tier::ActiveRecon
+        );
+        assert_eq!(n.classify(&args(&[])).unwrap(), Tier::ActiveRecon);
+        assert_eq!(
+            n.classify(&args(&["--script", "default,safe,version"]))
+                .unwrap(),
+            Tier::ActiveRecon
+        );
+    }
+
+    #[test]
+    fn everything_outside_the_enum_is_refused() {
+        let n = Nmap;
+        for bad in [
+            &["10.0.0.1"][..],
+            &["-iL", "hosts.txt"],
+            &["-oN", "out.txt"],
+            &["--script", "vuln"],
+            &["--script", "default,exploit"],
+            &["--script=http-shellshock"],
+            &["-S", "1.2.3.4"],
+            &["-D", "RND:10"],
+            &["--top-ports", "0"],
+            &["--version-intensity", "10"],
+            &["-p", "22;rm"],
+            &["--host-timeout", "5x"],
+            &["--top-ports"],
+            &["600"],
+        ] {
+            let err = n.classify(&args(bad)).unwrap_err().to_string();
+            assert!(err.starts_with("nmap adapter:"), "{bad:?} -> {err}");
+        }
+        assert!(
+            n.classify(&args(&["600"]))
+                .unwrap_err()
+                .to_string()
+                .contains("positional argument")
+        );
+    }
+
+    #[test]
+    fn command_puts_the_scoped_address_last() {
+        let t = ScopedTarget::new_for_test("node", "10.10.10.5", Tier::ActiveRecon);
+        let argv = Nmap
+            .command(
+                &t,
+                &args(&["-sV", "--top-ports=100", "-p22,80", "--script", "safe"]),
+            )
+            .unwrap();
+        assert_eq!(
+            argv,
+            [
+                "nmap",
+                "-sV",
+                "--top-ports",
+                "100",
+                "-p",
+                "22,80",
+                "--script",
+                "safe",
+                "-oX",
+                "-",
+                "10.10.10.5"
+            ]
+        );
+    }
+
+    #[test]
+    fn xml_open_ports_become_proposed_findings() {
+        let xml = r#"<?xml version="1.0"?><nmaprun><host><ports>
+<port protocol="tcp" portid="22"><state state="open" reason="syn-ack"/><service name="ssh" product="OpenSSH" version="9.6"/></port>
+<port protocol="tcp" portid="80"><state state="closed"/></port>
+<port protocol="udp" portid="53"><state state="open"/><service name="domain"/></port>
+<port protocol="tcp" portid="443"><state state="open"/></port>
+</ports></host></nmaprun>"#;
+        let found = Nmap.parse(xml.as_bytes());
+        assert_eq!(found.len(), 3);
+        assert_eq!(found[0].title, "Open tcp/22 (ssh OpenSSH)");
+        assert_eq!(found[0].detail, "nmap reported 22/tcp open");
+        assert_eq!(found[1].title, "Open udp/53 (domain)");
+        assert_eq!(found[2].title, "Open tcp/443");
+        assert!(Nmap.parse(b"not xml").is_empty());
+        assert!(Nmap.parse(b"<port <port <state state=\"open\"").is_empty());
+        assert_eq!(attr(r#"<x a="1 &amp; 2""#, "a"), "1 & 2");
+    }
+}

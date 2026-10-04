@@ -11,6 +11,10 @@ publish = false
 
 [dependencies]
 lcoat-core = { path = "../lcoat-core" }
+lcoat-format = { path = "../lcoat-format" }
+
+[dev-dependencies]
+lcoat-core = { path = "../lcoat-core", features = ["test-support"] }
 
 [lints]
 workspace = true

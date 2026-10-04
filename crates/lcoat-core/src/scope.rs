@@ -308,6 +308,50 @@ impl Decision {
     }
 }
 
+/// A target that passed a recorded preflight for a given tier. The fields
+/// are read-only and the constructor is private to this crate: the only way
+/// to obtain one is [`crate::operation::Operation::scoped_target`], which
+/// records the `scope.preflight` decision first. An adapter runner that
+/// takes a `ScopedTarget` therefore cannot be handed an unchecked target.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScopedTarget {
+    name: String,
+    address: String,
+    tier: Tier,
+}
+
+impl ScopedTarget {
+    pub(crate) fn new(name: &str, address: &str, tier: Tier) -> Self {
+        Self {
+            name: name.to_owned(),
+            address: address.to_owned(),
+            tier,
+        }
+    }
+
+    /// Test-only: a target that skipped the preflight. Behind the
+    /// `test-support` feature so no binary can reach it.
+    #[cfg(feature = "test-support")]
+    pub fn new_for_test(name: &str, address: &str, tier: Tier) -> Self {
+        Self::new(name, address, tier)
+    }
+
+    /// The identifier the operator gave (name, label or address).
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The address a tool should be pointed at.
+    pub fn address(&self) -> &str {
+        &self.address
+    }
+
+    /// The tier the preflight allowed.
+    pub fn tier(&self) -> Tier {
+        self.tier
+    }
+}
+
 impl Snapshot {
     /// `atlas_scope_target_matches`: name, address or label.
     pub fn target_matches(&self, target: &str) -> bool {

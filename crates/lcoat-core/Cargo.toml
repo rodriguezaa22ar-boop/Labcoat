@@ -9,6 +9,11 @@ repository.workspace = true
 authors.workspace = true
 publish = false
 
+[features]
+# Test-only constructors that bypass a recorded preflight (ScopedTarget).
+# Enabled by the adapter crate's dev-dependencies, never by a binary.
+test-support = []
+
 [dependencies]
 lcoat-format = { path = "../lcoat-format" }
 

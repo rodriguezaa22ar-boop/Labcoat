@@ -28,7 +28,7 @@ use crate::history;
 use crate::ledger::{self, Event, Ledger};
 use crate::lock::Lock;
 use crate::root::{LabRoot, TOOL_NAME};
-use crate::scope::{self, Decision, Profile, Snapshot, TargetInfo};
+use crate::scope::{self, Decision, Profile, ScopedTarget, Snapshot, TargetInfo};
 use crate::tier::Tier;
 
 // --- targets --------------------------------------------------------------
@@ -445,7 +445,48 @@ impl<S: State> Operation<S> {
         Ok(d)
     }
 
+    /// Preflight `target` for `capability`, record the decision, and on
+    /// success hand back the [`ScopedTarget`] the adapter runner requires.
+    /// The address comes from the scope snapshot when the identifier matches
+    /// the operation's target, so operator arguments never supply a host.
+    pub fn scoped_target(
+        &self,
+        capability: Tier,
+        tool: &str,
+        target: &str,
+        reason: &str,
+    ) -> Result<ScopedTarget> {
+        let snap = self.snapshot()?;
+        self.preflight(capability, tool, target, reason)?
+            .into_result()?;
+        let address = if snap.target_matches(target) && !snap.target_address.is_empty() {
+            snap.target_address.clone()
+        } else {
+            target.to_owned()
+        };
+        Ok(ScopedTarget::new(target, &address, capability))
+    }
+
     /// `atlas_ledger_append_current`: append an event for this operation.
+    /// Public for the adapter runner's `adapter.*` events; the detail is a
+    /// [`MetadataOnly`] so nothing raw can be recorded through it.
+    pub fn append_event(
+        &self,
+        event: &str,
+        capability: Tier,
+        tool: &str,
+        status: &str,
+        detail: &crate::metadata::MetadataOnly,
+    ) -> Result<()> {
+        self.append_ledger(
+            event,
+            capability.capability(),
+            tool,
+            status,
+            detail.as_str(),
+        )
+    }
+
     pub(crate) fn append_ledger(
         &self,
         event: &str,

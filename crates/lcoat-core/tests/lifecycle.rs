@@ -66,6 +66,7 @@ fn full_lifecycle_verifies_and_tampering_is_caught() {
             classification: Some(m("public")),
             redacted: false,
             tool: String::new(),
+            vantage: None,
         },
     )
     .unwrap();
