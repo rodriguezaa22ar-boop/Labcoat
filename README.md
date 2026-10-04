@@ -11,7 +11,9 @@ Lab Coat reads every operation the shell and Go builds ever wrote, writes files 
 
 ## Status
 
-**Phase 1 of 4 done: the read-only side.** `lcoat` reads every v1 file the shell build and Lite write and verifies operations the way the shell build does, byte for byte: `op list|readiness|verify|audit-verify|archive-verify|trust-chain`, `scope status`, `evidence list|verify`, `finding list`, `ledger verify|checkpoint`, `receipt create|verify|replay`. Against the shell build at `23ba2d2` it gives the oracle's verdict on all eight tamper cases (`conformance/tamper.sh`) and identical output on all 18 read-only commands (`conformance/readonly_diff.sh`); 98 tests pin the golden fixtures and the shell's recorded output. Zero dependencies. The write side (`op start`, `evidence add`, `finding add`, packets, adapters) is phase 2; until then `lcoat` names the command and points at Lite.
+**Phase 2 of 4 done: the whole v1 lifecycle, written in format 1.1.** `lcoat` starts, runs, closes and packages an operation end to end: `target add`, `op start|resume|close|report|handoff|closeout|audit-packet|archive-packet`, `evidence add`, `finding add|resolve|accept|reopen|note`, `approval grant|list|revoke`, `adapter run nmap|script`, `scope check`, plus every read-only command from phase 1. Everything it writes is still verified by the shell build and by Lite (`conformance/cross_check.sh`: one frozen-clock scenario through all three builds, every verifier on every root, 27 runs). On top of the v1 files it writes what they could not enforce: a hash-chained ledger (`ledger chain-verify`), an evidence manifest anchored in the packets, finding status changes, recorded Tier 3 approvals with mandatory expiry, and scan vantage. `conformance/tamper_rust.sh` runs six tamper cases the shell's verifiers cannot see (edited or deleted artifacts, forged manifests, rewritten or spliced ledger events, a truncated tail), with the shell and Lite run on the same roots to show which build catches what. Zero dependencies; 119 tests, including crash injection at every step of every multi-file write and a compile-fail suite for the rules that are types.
+
+Phase 3 (review packet, `evidence bundle`, `doctor`, `--json` field parity) and phase 4 (receipt signatures, release packets, 0.2.0) follow; the field re-run on the Fedora lab server happens with the operator at the keyboard.
 
 Two behaviours differ from Lite on purpose, both from the field test: an unset `LCOAT_ROOT` is an error rather than a silent fallback to the current directory, and no read-only command creates a directory.
 
@@ -37,8 +39,14 @@ ATLAS_REPO=/path/to/atlas-trust-infrastructure conformance/tamper.sh check targe
 # Read-only commands, byte for byte against the shell build and Lite:
 ATLAS_REPO=/path/to/atlas-trust-infrastructure GO_PROJECT=/path/to/GO-project conformance/readonly_diff.sh
 
-# Everything above plus the phase-2 scenario (NOT YET until phase 2 lands):
+# Format 1.1 tamper cases only this build catches (shell/Lite comparison when the repos are set):
+ATLAS_REPO=... GO_PROJECT=... conformance/tamper_rust.sh target/debug/lcoat
+
+# Everything above plus the three-way lifecycle scenario:
 ATLAS_REPO=/path/to/atlas-trust-infrastructure GO_PROJECT=/path/to/GO-project conformance/cross_check.sh
+
+# Crash-injection tests need the crash points compiled in (never in a release build):
+cargo test --workspace --features lcoat/test-support
 ```
 
 Requires Rust 1.89 or later (`rust-toolchain.toml` selects stable). No other tools are needed to build; `nmap` is needed at run time for the nmap adapter.

@@ -31,5 +31,9 @@ plus `conformance/readonly_diff.sh` are the gate.
 recorded by `conformance/tamper.sh record`. The first line describes the
 case; the rest are verdict lines another implementation must reproduce
 (`tamper.sh check <bin> <rootvar>`). Lite v0.1.4 matches all eight. Note the
-`edit_artifact` case: every shell verifier says `verified`, which is the gap
-format 1.1 closes with the evidence manifest.
+`edit_artifact` case: every shell verifier says `verified`, because the
+shell-shaped packet verifiers never re-hash artifacts. Lab Coat's `evidence
+verify` and the `Evidence Artifacts` line of `op trust-chain` catch it, and
+the format 1.1 manifest's hash is anchored in the packets so it cannot be
+forged to hide the edit; `conformance/tamper_rust.sh` pins both halves
+inline (it writes no fixture) along with the ledger-chain cases.

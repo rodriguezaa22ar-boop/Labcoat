@@ -26,7 +26,7 @@ Given an operation whose packets, evidence and receipts all verify:
 
 | Adversary | Can they | Defence |
 | --- | --- | --- |
-| Someone who later edits the records (including the operator) | change an evidence file, a packet, a ledger event, a receipt | hashes anchored in later packets; chained ledger names the event; `evidence verify` re-hashes artifacts |
+| Someone who later edits the records (including the operator) | change an evidence file, a packet, a ledger event, a receipt | hashes anchored in later packets; chained ledger names the event; `evidence verify` re-hashes artifacts. **Limit:** the chain cannot see its own tail removed; a ledger truncated before any packet anchors it is caught only against a recorded `ledger checkpoint` head (`conformance/tamper_rust.sh`, case 6) |
 | A tool with malicious output | inject content into packets | output goes only into a hashed evidence file; packets hold hashes and short scanned labels; adapter parsers are fuzzed |
 | An operator making a mistake | scan an out-of-scope host; run an intrusive scan; leave the lab root unset | target comes from scope, never from arguments; argument allowlists; tier ceiling; unset root is an error |
 | An operator acting in bad faith | declare a wrong tier for a `script` run; describe a finding dishonestly | **not defended**: recorded, not enforced; this is a lab tool for authorized self-assessment |
@@ -42,3 +42,4 @@ Multi-user authorization, key management for more than one operator, remote atte
 1. The `script` adapter's tier is declared, not derived. Mitigation is documentary (the ledger says `declared`); a stronger mitigation (an allowlist of known read-only commands) is a candidate for 0.3.
 2. Approvals in a single-operator lab are self-granted. The record is still useful (it shows intent and timing) but is not a control.
 3. The scanner is pattern-based. New credential formats need new patterns; the fixture set should grow with each one found in the field.
+4. Truncation of a live ledger is undetectable from the ledger alone (see the first adversary row). Keeping `ledger checkpoint` output outside the lab root, or a receipt chain across checkpoints, is the operator's job until signatures land in phase 4.

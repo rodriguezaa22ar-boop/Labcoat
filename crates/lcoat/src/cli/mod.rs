@@ -84,6 +84,8 @@ pub const USAGE: &str = "usage:
 The lab root comes from LCOAT_ROOT (or LAB_ROOT). Read-only commands never
 create it; mutating commands create the layout once. Tiers: 0-2 run under
 the scope profile, 3 needs 'approval grant', 4 and 5 are refused.
+'op close' clears the active operation, so the packets that follow name it:
+lcoat op closeout <name>, then audit-packet and archive-packet.
 ";
 
 /// A command's failure: an operator-facing error, or an exit code for a

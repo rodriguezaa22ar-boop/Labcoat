@@ -98,7 +98,7 @@ Types cannot prove the scanner's patterns are complete or that a hash covered th
 | Upgrade | On disk | Fixes | v1 verifiers |
 | --- | --- | --- | --- |
 | Ledger hash chain | `prev_hash`, `event_hash` per event (SHA-256 of canonical event without those fields + previous `event_hash`; first `prev_hash` null) | names the altered event | ignore the fields |
-| Evidence manifest | `evidence/manifest.ndjson`; closeout/archive fill the `Evidence manifest:` slot | edited/deleted artifacts caught by the packet chain | shell already checks the slot |
+| Evidence manifest | `evidence/manifest.ndjson`; closeout/archive fill the `Evidence manifest:` slot | edited/deleted artifacts caught by `evidence verify` and the trust chain; the manifest itself is hash-anchored in the packets, so it cannot be forged to hide an edit | verify the manifest's hash in the slot; do not re-hash artifacts |
 | Finding lifecycle | `finding resolve/accept/reopen` append a record with the same id; `finding.updated` ledger event | status after `add` | latest-record-per-id readers |
 | Scan vantage | `vantage=<hostname>` and `vantage_addr` on adapter evidence and `adapter.started` | self-scan vs external scan distinguishable | extra tokens ignored |
 | Approval records | `approvals.ndjson`; `approval.granted` event | Tier 3 under a recorded grant | same file the shell uses |
@@ -149,11 +149,11 @@ Atomic writes (temp file in the same directory, `fsync`, rename) apply to every 
 ### Format 1.1 details fixed now
 
 - **Ledger chain:** as frozen in `lcoat-core::chain`. Every event Lab Coat appends carries `prev_hash`/`event_hash`; a ledger that starts under Lite and continues under Lab Coat is `Partial { first_chained }`, reported as such, never upgraded in place.
-- **Evidence manifest:** `evidence/manifest.ndjson`, one record per artifact `{id, path, sha256, bytes, recorded_at}`, appended with the index; its own hash goes into the closeout and archive `Evidence manifest:` slot the shell already verifies. This is the change that makes the shell catch an edited artifact.
+- **Evidence manifest:** `evidence/manifest.ndjson`, one record per artifact `{id, path, sha256, bytes, recorded_at}`, appended with the index; its own hash goes into the closeout and archive `Evidence manifest:` slot the shell already verifies. Precisely what this buys: an edited or deleted artifact is caught by Lab Coat's (and Lite's) `evidence verify` and by the `Evidence Artifacts` line of `op trust-chain`; an attacker who also rewrites the manifest and index to match is caught by `op verify` and `op archive-verify` in all three builds, because the manifest's hash is anchored in the packets. The shell's own verifiers never re-hash artifacts, so on an edited artifact alone they still say `verified`; `conformance/tamper_rust.sh` demonstrates both halves. (An earlier draft of this paragraph claimed the manifest makes the shell catch the edit; it does not, and the claim was wrong.)
 - **Relocatable paths:** packets keep the absolute path the shell expects and add `rel=<root-relative>` tokens on every anchor line. v1 verifiers ignore the token; Lab Coat's verifiers use it only when the absolute path is missing *and* the packet carries the token, so verdicts on v1 packets are unchanged and a Lab Coat root can be moved or restored from backup and still verify.
 - **Finding lifecycle:** `finding resolve|accept|reopen|note` append a full record with the same `id` (the readers already take the latest), plus `finding.updated` ledger events with the status transition in `detail`.
-- **Approvals:** `approvals.ndjson` records `{capability, target, status, reason, granted_by, granted_at, expires_at}`; `approval grant` requires a reason and an expiry, `approval list|revoke` exist, and the preflight honours only unexpired `approved` records. Phase 4 adds the signature; the record shape is fixed now so phase 4 is additive.
-- **`--json` everywhere:** every read-only command accepts `--json` and emits the shell's object where the shell has one (`atlas.operation_trust_chain.v1`, `atlas.receipt_replay.v1`, …) or a documented `lcoat.*.v1` object where it does not. Scripts and the case study stop parsing tables.
+- **Approvals:** `approvals.ndjson` keeps the shell's record shape `{ts, op, target, capability, tier, approved_by, reason, status}` and adds `expires_at`; the latest record per capability and target wins, `revoked` ends a grant, `approval grant` requires a reason and an expiry (no open-ended grants), `approval list|revoke` exist, and the preflight honours only an unexpired `approved` record. Phase 4 adds the signature; the record shape is fixed now so phase 4 is additive.
+- **`--json` everywhere:** every read-only command accepts `--json` and emits the shell's object where the shell has one (`atlas.operation_trust_chain.v1`, `atlas.receipt_replay.v1`, `atlas.ledger_verify.v1`, `atlas.checkpoint.v1`, …) or a documented `lcoat.*.v1` object where it does not (`lcoat.readiness.v1`, `lcoat.evidence_verify.v1`, `lcoat.ledger_chain.v1`, the three packet verifiers). Scripts and the case study stop parsing tables. Phase 3 checks the shell-object fields one by one against the shell's output.
 
 ### Things kept exactly as the shell has them, on purpose
 
@@ -161,7 +161,17 @@ Second-resolution IDs with `_02` suffixes, `printf %q` env quoting, Markdown pac
 
 ### Exit for phase 2
 
-`cross_check.sh` stage 2 clean (three-way scenario, normalized diff of every file, 27 verifier runs); two Rust-only tamper fixtures (rewritten middle event with the file hash recomputed, artifact edited after the manifest) fail only in Rust; the compile-fail suite passes; `evidence add` and `op close` survive an injected crash at every step in the table above with the verifiers reporting the documented state; the astra operations written by Lite 0.1.4 load, verify and can be resumed by Lab Coat without conversion.
+`cross_check.sh` stage 2 clean (three-way scenario, normalized diff of every file, 27 verifier runs); the Rust-only tamper cases fail only in Rust; the compile-fail suite passes; `evidence add` and `op close` survive an injected crash at every step in the table above with the verifiers reporting the documented state; the astra operations written by Lite 0.1.4 load, verify and can be resumed by Lab Coat without conversion.
+
+### Phase 2 result
+
+Everything above except the last clause is done and checked by `conformance/cross_check.sh` (`CONFORMANCE OK`: 119 tests, TAMPER OK, READONLY OK, TAMPER-RUST OK, 27 verifier runs). The astra step waits for the field re-run with the operator; nothing is remote-driven from here.
+
+- **Crash injection** is real, not simulated: `lcoat_core::crash::point` sits after every step in the transaction-order table and, with `--features lcoat/test-support`, `LCOAT_TEST_CRASH_AT=<step>` exits the binary there (code 99). `crates/lcoat/tests/lifecycle_cli.rs` crashes `op start`, `evidence add`, `finding add`, `op close` and `op closeout` and asserts the verifiers' verdicts and the documented recovery command. Release builds compile the hook out; CI greps the static binaries for the marker string.
+- **Compile-fail suite** (`crates/lcoat-core/tests/compile_fail.rs`, std-only, no `trybuild`): eight downstream programs the compiler must refuse: writers on `Operation<Closed>`, packets on `Operation<Active>`, `close` on a closed operation, `ScopedTarget` without a preflight, `String` where `MetadataOnly` is required, a `Written` handle constructed by hand, a path where a `Written` is required.
+- **Rust-only tamper cases** (`conformance/tamper_rust.sh`, six cases): artifact edited after capture and artifact deleted (caught by `evidence verify` and the trust chain; the shell says `verified` on the same root, Lite's `evidence verify` catches them too); manifest and index forged to match the edit (caught by `op verify` / `op archive-verify` through the packet anchors, in all three builds); a ledger event rewritten or spliced out before any packet exists (caught by `ledger chain-verify` and the trust chain's `Ledger Chain` line; the shell and Lite have no chain and say `ok`); and the documented limit: a truncated tail passes the chain and is caught only by comparing against a recorded `ledger checkpoint` head.
+- **Two deliberate divergences from the shell, to record:** (1) `op closeout`, `op audit-packet` and `op archive-packet` require a closed operation (the shell writes a closeout for an active one); since `op close` clears the active pointer as the shell does, the packets are written by name afterwards (`lcoat op closeout <operation>`), and the refusal says exactly that. (2) `finding accept` works, but `finding review-packet` is phase 3, so an archive packet for an operation with accepted risks is `incomplete` until then; the trust chain reports it on the `Accepted Risk Review Packet` line rather than hiding it.
+- **Not yet, carried to phase 3:** `evidence bundle`, `finding review-packet`, `lcoat doctor`, field-by-field `--json` parity with the shell's objects, the field re-run on astra.
 
 ## Command surface
 
@@ -185,10 +195,10 @@ Fallback list if a hand-written piece proves costly (adopt with a one-line reaso
 1. **Tamper verdicts recorded first.** `conformance/tamper.sh record` builds a closed operation with the shell build, applies eight cases and writes the shell's verdicts to `fixtures/tamper/*.expect`; `tamper.sh check <bin>` diffs another implementation against them. Done in phase 0; Lite matches on all eight. Notably the shell passes an edited artifact (all verifiers `verified`), which is the gap format 1.1 closes.
 2. **Golden hashes first:** ledger file hash (18 events), head event and closeout prefix hashes, artifact hash, all three receipts' `event_hash`/`receipt_hash`. Done in phase 0.
 3. **Three-way scenario:** one frozen-clock scenario through shell, Go and Rust; normalized diff; every verifier on every root (9 combinations, 27 runs).
-4. **Tamper fixtures, two tiers:** Lite's five must fail identically in all three; two Rust-only (rewritten middle event with file hash recomputed; artifact edited after `evidence bundle`) must fail only in Rust.
+4. **Tamper cases, two tiers:** the shell's eight verdicts must be reproduced (`tamper.sh check`); six format 1.1 cases must fail only in Rust (`tamper_rust.sh`, with the shell and Lite run on the same roots to show the gap). Done in phase 2.
 5. **Property tests** over canonical JSON, envfile round trip, scanner.
 6. **Fuzzing** of envfile, NDJSON, packet anchor and nmap XML parsers. `cargo-fuzz` needs nightly, so it runs as a separate CI job on nightly; local builds and every other job stay on stable.
-7. **Compile-fail tests** (`trybuild`) for the type-level claims.
+7. **Compile-fail tests** for the type-level claims: std-only, each case a tiny downstream crate built with `cargo`, one package name per case (two packages with one name share a fingerprint and a failed case can pass as fresh). Done in phase 2.
 8. **Field validation:** re-run the Fedora lab assessment with Lab Coat; Lite verifies the result; the case study gets a third column.
 
 ### Read-only conformance (phase 1 result)
@@ -216,8 +226,8 @@ Operation readiness, ledger verify/checkpoint and receipt verify were already id
 | --- | --- | --- | --- |
 | 0 | Prepare (done) | Workspace, CI, fixtures, canonical JSON + hashing, `MetadataOnly`, this blueprint | `cargo test` reproduces the golden ledger, artifact and receipt hashes |
 | 1–2 | Read and verify v1 (done) | envfile, NDJSON, ledger reader, packet verifiers, `receipt verify/replay/create`, `op trust-chain`, `evidence verify`; **tamper cases first, verifiers second** | `tamper.sh check target/debug/lcoat LCOAT_ROOT` prints TAMPER OK; `readonly_diff.sh` prints READONLY OK (18 commands byte-identical to the shell); golden tests pin the shell's recorded output |
-| 3–4 | Write v1-compatible | targets, operations, scope, evidence, findings, report, packets, `adapter run`; typestate; `MetadataOnly` on every writer | three-way cross-check clean in all nine directions; compile-fail suite passes |
-| 5–6 | Format 1.1 | ledger chain, `evidence bundle`, finding lifecycle, vantage, `ledger chain-verify`, `doctor`; musl + macOS builds | shell and Lite still verify Rust output; Rust-only tamper fixtures fail only in Rust; Mac scan records vantage |
+| 3–4 | Write v1-compatible (done) | targets, operations, scope, evidence, findings, report, packets, `adapter run`; typestate; `MetadataOnly` on every writer | three-way cross-check clean in all nine directions; compile-fail suite passes |
+| 5–6 | Format 1.1 (chain, manifest, finding lifecycle, vantage, approvals and `chain-verify` landed with phase 2) | `evidence bundle`, `finding review-packet`, `doctor`, `--json` field parity; musl + macOS builds | shell and Lite still verify Rust output; Rust-only tamper cases fail only in Rust; Mac scan records vantage |
 | 7–8 | Trust plane and release | approval plane, `v1 status` split, receipt signatures, release packets; field re-run; 0.2.0 | field operation verified by all three builds; `v0.2.0` tagged with SHA256SUMS |
 
 Schedule risk sits in weeks 3–4. If the typestate fights the format, the format wins and the type gets a documented exception.
