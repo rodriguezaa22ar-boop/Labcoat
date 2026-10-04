@@ -7,15 +7,17 @@
 
 pub mod trustchain;
 pub mod verify;
+pub mod write;
 
 pub use trustchain::{TrustChain, collect_trust_chain};
 pub use verify::{VerifyResult, archive_verify, audit_verify, closeout_verify};
+pub use write::{Written, archive, audit, closeout, handoff};
 
 use std::path::Path;
 
 use crate::error::Result;
 use crate::ledger;
-use crate::operation::Operation;
+use crate::operation::{Operation, State};
 use crate::{fail, root::file_exists};
 
 /// The file's sha256, or `""` when the path is empty or missing
@@ -76,7 +78,7 @@ pub(crate) fn bullet_value<'a>(text: &'a str, label: &str) -> &'a str {
 
 /// The path recorded by the latest ledger event for a packet kind
 /// (`handoff`, `closeout`, `audit`, `archive`), or `""` when none exists.
-pub fn latest_in_ledger(op: &Operation, subdir: &str) -> Result<String> {
+pub fn latest_in_ledger<S: State>(op: &Operation<S>, subdir: &str) -> Result<String> {
     let event_name = match subdir {
         "handoff" => "handoff.generated",
         "closeout" => "closeout.manifest.generated",

@@ -11,7 +11,7 @@ use crate::error::Result;
 use crate::evidence;
 use crate::findings::{self, Finding};
 use crate::ledger::{self, Event};
-use crate::operation::Operation;
+use crate::operation::{Operation, State as OpState};
 use crate::validation::{self, Plan};
 
 /// A ledger event of interest, or its absence.
@@ -138,7 +138,7 @@ pub struct State {
 }
 
 /// Compute readiness for the operation's own target.
-pub fn collect(op: &Operation) -> Result<State> {
+pub fn collect<S: OpState>(op: &Operation<S>) -> Result<State> {
     let target = op.target.as_str();
     let dir = op.dir.as_path();
     let mut s = State {
@@ -275,7 +275,7 @@ impl State {
     }
 
     /// The "Operation Readiness" block the shell build prints.
-    pub fn lines(&self, op: &Operation) -> Vec<String> {
+    pub fn lines<S: OpState>(&self, op: &Operation<S>) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         let marker_or = |m: &Marker| {
             if m.present() {

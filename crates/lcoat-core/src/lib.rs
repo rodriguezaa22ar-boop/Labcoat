@@ -42,6 +42,7 @@ pub mod operation;
 pub mod packet;
 pub mod readiness;
 pub mod receipt;
+pub mod report;
 pub mod root;
 pub mod scope;
 pub mod tier;

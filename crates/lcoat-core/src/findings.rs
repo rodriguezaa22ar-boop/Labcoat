@@ -4,15 +4,27 @@
 //! Every ordering here reproduces a jq expression from the shell build
 //! (`sort_by(...) | reverse` is a stable ascending sort followed by a
 //! reverse, ties included), so three implementations print the same rows.
-//! Recording and updating findings is the phase 2 writer.
+//! Writing: [`add`] records a finding; [`update`] appends a full record with
+//! the same id (the readers take the latest), which is how `resolve`,
+//! `accept`, `reopen` and `note` work, as in the shell build. Only an
+//! [`Operation<Active>`] can write, and every free-text field arrives as
+//! [`MetadataOnly`].
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 
-use lcoat_format::json::Object;
+use lcoat_format::clock;
+use lcoat_format::fsutil::mkdir_private;
+use lcoat_format::ids::next_id;
+use lcoat_format::json::{Object, Value};
 use lcoat_format::ndjson;
 
 use crate::error::Result;
+use crate::fail;
+use crate::metadata::MetadataOnly;
+use crate::operation::{Active, Operation};
+use crate::root::TOOL_NAME;
+use crate::tier::Tier;
 
 /// `findings.ndjson` for an operation directory.
 pub fn index_file(op_dir: &Path) -> PathBuf {
@@ -65,10 +77,14 @@ pub struct Finding {
     pub accepted_owner: String,
     /// Accepted-risk expiry (`YYYY-MM-DD` or timestamp).
     pub accepted_until: String,
+    /// When accepted.
+    pub accepted_at: String,
     /// Who accepted.
     pub accepted_by: String,
     /// Review reason.
     pub review_reason: String,
+    /// When reviewed.
+    pub reviewed_at: String,
     /// Reviewer.
     pub reviewed_by: String,
     /// Latest note.
@@ -133,8 +149,10 @@ impl Finding {
             accepted_reason: o.str("accepted_reason").to_owned(),
             accepted_owner: o.str("accepted_owner").to_owned(),
             accepted_until: o.str("accepted_until").to_owned(),
+            accepted_at: o.str("accepted_at").to_owned(),
             accepted_by: o.str("accepted_by").to_owned(),
             review_reason: o.str("review_reason").to_owned(),
+            reviewed_at: o.str("reviewed_at").to_owned(),
             reviewed_by: o.str("reviewed_by").to_owned(),
             note: o.str("note").to_owned(),
         }
@@ -387,6 +405,432 @@ pub fn report_markdown(op_dir: &Path) -> Result<Vec<String>> {
     }
     fs.sort_by(by_updated_then_id);
     Ok(fs.iter().map(Finding::report_line).collect())
+}
+
+// --- writers ----------------------------------------------------------------
+
+fn strs(items: &[String]) -> Value {
+    Value::Array(items.iter().map(|x| Value::String(x.clone())).collect())
+}
+
+impl Finding {
+    /// The `finding add` record, in the shell build's field order.
+    fn to_add_object(&self) -> Object {
+        let s = |v: &str| Value::String(v.to_owned());
+        let mut o = Object::new();
+        o.insert("id", s(&self.id));
+        o.insert("operation", s(&self.operation));
+        o.insert("target", s(&self.target));
+        o.insert("title", s(&self.title));
+        o.insert("level", s(&self.level));
+        o.insert("severity", s(&self.severity));
+        o.insert("confidence", s(&self.confidence));
+        o.insert("status", s(&self.status));
+        o.insert("source", s(&self.source));
+        o.insert("impact", s(&self.impact));
+        o.insert("recommendation", s(&self.recommendation));
+        o.insert("evidence", strs(&self.evidence));
+        o.insert("created_at", s(&self.created_at));
+        o
+    }
+
+    /// The `finding update` record (`atlas_findings_append_update_record`):
+    /// every field, `event: updated`, then the accepted/review fields that
+    /// are non-empty, in the shell's order.
+    fn to_update_object(&self) -> Object {
+        let s = |v: &str| Value::String(v.to_owned());
+        let mut o = Object::new();
+        o.insert("id", s(&self.id));
+        o.insert("operation", s(&self.operation));
+        o.insert("target", s(&self.target));
+        o.insert("title", s(&self.title));
+        o.insert("level", s(&self.level));
+        o.insert("severity", s(&self.severity));
+        o.insert("confidence", s(&self.confidence));
+        o.insert("status", s(&self.status));
+        o.insert("source", s(&self.source));
+        o.insert("impact", s(&self.impact));
+        o.insert("recommendation", s(&self.recommendation));
+        o.insert("evidence", strs(&self.evidence));
+        o.insert("validations", strs(&self.validations));
+        o.insert("created_at", s(&self.created_at));
+        o.insert("updated_at", s(&self.updated_at));
+        o.insert("event", s("updated"));
+        o.insert("note", s(&self.note));
+        for (k, v) in [
+            ("accepted_reason", &self.accepted_reason),
+            ("accepted_owner", &self.accepted_owner),
+            ("accepted_until", &self.accepted_until),
+            ("accepted_at", &self.accepted_at),
+            ("accepted_by", &self.accepted_by),
+            ("review_reason", &self.review_reason),
+            ("reviewed_at", &self.reviewed_at),
+            ("reviewed_by", &self.reviewed_by),
+        ] {
+            if !v.is_empty() {
+                o.insert(k, s(v));
+            }
+        }
+        o
+    }
+}
+
+/// Inputs to [`add`]. Empty optional fields take the shell build's
+/// defaults (`inferred`, `info`, `medium`, `atlas`; status `open`, or
+/// `validated` when the level is `validated`).
+#[derive(Clone, Debug, Default)]
+pub struct AddParams {
+    /// Required.
+    pub title: Option<MetadataOnly>,
+    /// The operation's target when `None`.
+    pub target: Option<MetadataOnly>,
+    /// `observed`, `inferred`, `validated`.
+    pub level: String,
+    /// `info`, `low`, `medium`, `high`, `critical`.
+    pub severity: String,
+    /// `low`, `medium`, `high`.
+    pub confidence: String,
+    /// `open`, `accepted`, `resolved`, `validated`.
+    pub status: String,
+    /// Recording tool.
+    pub source: String,
+    /// Impact statement.
+    pub impact: Option<MetadataOnly>,
+    /// Recommendation.
+    pub recommendation: Option<MetadataOnly>,
+    /// Evidence IDs that must exist in the operation.
+    pub evidence: Vec<String>,
+}
+
+fn text(v: &Option<MetadataOnly>) -> String {
+    v.as_ref()
+        .map(|m| m.as_str().to_owned())
+        .unwrap_or_default()
+}
+
+/// `cmd_finding_add`: validate, preflight (read-only), check the evidence
+/// IDs, claim an ID, append the record, append `finding.recorded`.
+pub fn add(op: &Operation<Active>, p: &AddParams) -> Result<Finding> {
+    let title = text(&p.title);
+    if title.is_empty() {
+        fail!("finding title is required");
+    }
+    let level = or(&p.level, "inferred");
+    let severity = or(&p.severity, "info");
+    let confidence = or(&p.confidence, "medium");
+    let source = or(&p.source, TOOL_NAME);
+    if !valid_level(level) {
+        fail!("expected finding level observed, inferred, or validated; got: {level}");
+    }
+    if !valid_severity(severity) {
+        fail!("expected severity info, low, medium, high, or critical; got: {severity}");
+    }
+    if !valid_confidence(confidence) {
+        fail!("expected confidence low, medium, or high; got: {confidence}");
+    }
+    let status = if p.status.is_empty() {
+        if level == "validated" {
+            "validated"
+        } else {
+            "open"
+        }
+    } else {
+        p.status.as_str()
+    };
+    if !valid_status(status) {
+        fail!("expected status open, accepted, resolved, or validated; got: {status}");
+    }
+    let target = p
+        .target
+        .as_ref()
+        .map_or(op.target.as_str(), MetadataOnly::as_str)
+        .to_owned();
+
+    let _lock = op.lock()?;
+    op.preflight(Tier::ReadOnly, TOOL_NAME, &target, "record finding")?
+        .into_result()?;
+    let mut evidence_ids = Vec::new();
+    for id in p.evidence.iter().filter(|id| !id.is_empty()) {
+        if !crate::evidence::exists(&op.dir, id)? {
+            fail!("unknown evidence id for active operation: {id}");
+        }
+        evidence_ids.push(id.clone());
+    }
+    let root = dir(&op.dir);
+    mkdir_private(&root)?;
+    let id = next_id(&root, "finding");
+    mkdir_private(&root.join(&id))?;
+    let f = Finding {
+        id: id.clone(),
+        operation: op.slug.clone(),
+        target,
+        title,
+        level: level.to_owned(),
+        severity: severity.to_owned(),
+        confidence: confidence.to_owned(),
+        status: status.to_owned(),
+        source: source.to_owned(),
+        impact: text(&p.impact),
+        recommendation: text(&p.recommendation),
+        evidence: evidence_ids,
+        created_at: clock::timestamp(),
+        ..Default::default()
+    };
+    ndjson::append(&index_file(&op.dir), &f.to_add_object())?;
+    op.append_ledger(
+        "finding.recorded",
+        Tier::ReadOnly.capability(),
+        TOOL_NAME,
+        "ok",
+        &format!("finding={id} level={level} severity={severity} status={status}"),
+    )?;
+    Ok(f)
+}
+
+/// Changes for [`update`]; `None` keeps the current value.
+#[derive(Clone, Debug, Default)]
+pub struct Update {
+    /// New title.
+    pub title: Option<MetadataOnly>,
+    /// New level.
+    pub level: Option<String>,
+    /// New severity.
+    pub severity: Option<String>,
+    /// New confidence.
+    pub confidence: Option<String>,
+    /// New status.
+    pub status: Option<String>,
+    /// New impact.
+    pub impact: Option<MetadataOnly>,
+    /// New recommendation.
+    pub recommendation: Option<MetadataOnly>,
+    /// Evidence IDs to merge in.
+    pub evidence: Vec<String>,
+    /// Validation plan IDs to merge in.
+    pub validations: Vec<String>,
+    /// Latest note.
+    pub note: Option<MetadataOnly>,
+    /// Accepted-risk fields.
+    pub accepted_reason: Option<MetadataOnly>,
+    /// Accepted-risk owner.
+    pub accepted_owner: Option<MetadataOnly>,
+    /// Accepted-risk expiry.
+    pub accepted_until: Option<String>,
+    /// Accepted at.
+    pub accepted_at: Option<String>,
+    /// Accepted by.
+    pub accepted_by: Option<String>,
+    /// Review reason.
+    pub review_reason: Option<MetadataOnly>,
+    /// Reviewed at.
+    pub reviewed_at: Option<String>,
+    /// Reviewed by.
+    pub reviewed_by: Option<String>,
+}
+
+fn merge_unique(current: &[String], extra: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = current.to_vec();
+    for e in extra {
+        if !e.is_empty() && !out.contains(e) {
+            out.push(e.clone());
+        }
+    }
+    out
+}
+
+/// The latest record for `id`, or a refusal naming it.
+pub fn latest_record(op_dir: &Path, id: &str) -> Result<Finding> {
+    match latest(op_dir, "")?.into_iter().find(|f| f.id == id) {
+        Some(f) => Ok(f),
+        None => fail!("unknown finding: {id}"),
+    }
+}
+
+/// `cmd_finding_update`: merge `u` into the latest record, validate,
+/// preflight, check new evidence IDs exist, append the record and
+/// `finding.updated`. Returns the new record.
+pub fn update(op: &Operation<Active>, id: &str, u: &Update) -> Result<Finding> {
+    let _lock = op.lock()?;
+    let cur = latest_record(&op.dir, id)?;
+    if cur.operation != op.slug {
+        fail!(
+            "finding '{id}' does not belong to active operation '{}'",
+            op.slug
+        );
+    }
+    let pick = |new: &Option<String>, cur: &str, fallback: &str| -> String {
+        match new.as_deref() {
+            Some(v) if !v.is_empty() => v.to_owned(),
+            _ => or(cur, fallback).to_owned(),
+        }
+    };
+    let pick_m = |new: &Option<MetadataOnly>, cur: &str| -> String {
+        match new {
+            Some(v) if !v.as_str().is_empty() => v.as_str().to_owned(),
+            _ => cur.to_owned(),
+        }
+    };
+    let f = Finding {
+        id: cur.id.clone(),
+        operation: cur.operation.clone(),
+        target: cur.target.clone(),
+        title: pick_m(&u.title, &cur.title),
+        level: pick(&u.level, &cur.level, "inferred"),
+        severity: pick(&u.severity, &cur.severity, "info"),
+        confidence: pick(&u.confidence, &cur.confidence, "medium"),
+        status: pick(&u.status, &cur.status, "open"),
+        source: or(&cur.source, TOOL_NAME).to_owned(),
+        impact: pick_m(&u.impact, &cur.impact),
+        recommendation: pick_m(&u.recommendation, &cur.recommendation),
+        evidence: merge_unique(&cur.evidence, &u.evidence),
+        validations: merge_unique(&cur.validations, &u.validations),
+        created_at: or(&cur.created_at, &clock::timestamp()).to_owned(),
+        updated_at: clock::timestamp(),
+        accepted_reason: pick_m(&u.accepted_reason, &cur.accepted_reason),
+        accepted_owner: pick_m(&u.accepted_owner, &cur.accepted_owner),
+        accepted_until: pick(&u.accepted_until, &cur.accepted_until, ""),
+        accepted_at: pick(&u.accepted_at, &cur.accepted_at, ""),
+        accepted_by: pick(&u.accepted_by, &cur.accepted_by, ""),
+        review_reason: pick_m(&u.review_reason, &cur.review_reason),
+        reviewed_at: pick(&u.reviewed_at, &cur.reviewed_at, ""),
+        reviewed_by: pick(&u.reviewed_by, &cur.reviewed_by, ""),
+        note: text(&u.note),
+    };
+    if !valid_level(&f.level) {
+        fail!(
+            "expected finding level observed, inferred, or validated; got: {}",
+            f.level
+        );
+    }
+    if !valid_severity(&f.severity) {
+        fail!(
+            "expected severity info, low, medium, high, or critical; got: {}",
+            f.severity
+        );
+    }
+    if !valid_confidence(&f.confidence) {
+        fail!(
+            "expected confidence low, medium, or high; got: {}",
+            f.confidence
+        );
+    }
+    if !valid_status(&f.status) {
+        fail!(
+            "expected status open, accepted, resolved, or validated; got: {}",
+            f.status
+        );
+    }
+    op.preflight(Tier::ReadOnly, TOOL_NAME, &f.target, "update finding")?
+        .into_result()?;
+    for e in u.evidence.iter().filter(|e| !e.is_empty()) {
+        if !crate::evidence::exists(&op.dir, e)? {
+            fail!("unknown evidence id for active operation: {e}");
+        }
+    }
+    ndjson::append(&index_file(&op.dir), &f.to_update_object())?;
+    op.append_ledger(
+        "finding.updated",
+        Tier::ReadOnly.capability(),
+        TOOL_NAME,
+        "ok",
+        &format!(
+            "finding={id} level={} severity={} status={} validations={}",
+            f.level,
+            f.severity,
+            f.status,
+            f.validations.join(" ")
+        ),
+    )?;
+    Ok(f)
+}
+
+/// `cmd_finding_resolve`: status `resolved`, with optional evidence and note.
+pub fn resolve(
+    op: &Operation<Active>,
+    id: &str,
+    evidence: &[String],
+    note: Option<MetadataOnly>,
+) -> Result<Finding> {
+    update(
+        op,
+        id,
+        &Update {
+            status: Some("resolved".into()),
+            evidence: evidence.to_vec(),
+            note,
+            ..Default::default()
+        },
+    )
+}
+
+/// Reopen a resolved or accepted finding (`open`), with a note saying why.
+pub fn reopen(op: &Operation<Active>, id: &str, note: Option<MetadataOnly>) -> Result<Finding> {
+    update(
+        op,
+        id,
+        &Update {
+            status: Some("open".into()),
+            note,
+            ..Default::default()
+        },
+    )
+}
+
+/// Inputs to [`accept`].
+#[derive(Clone, Debug)]
+pub struct AcceptParams {
+    /// Required.
+    pub reason: MetadataOnly,
+    /// Risk owner.
+    pub owner: Option<MetadataOnly>,
+    /// `YYYY-MM-DD` (or a timestamp) when the acceptance lapses.
+    pub expires: Option<String>,
+    /// Evidence IDs to merge in.
+    pub evidence: Vec<String>,
+}
+
+/// `cmd_finding_accept`: an update to `accepted` carrying the acceptance
+/// fields and the shell's note form, then `finding.accepted`.
+pub fn accept(op: &Operation<Active>, id: &str, p: &AcceptParams) -> Result<Finding> {
+    let accepted_at = clock::timestamp();
+    let accepted_by = crate::approval::operator();
+    let owner = text(&p.owner);
+    let expires = p.expires.clone().unwrap_or_default();
+    let mut note = format!("accepted risk: {}", p.reason.as_str());
+    if !owner.is_empty() {
+        note.push_str(&format!(" owner={owner}"));
+    }
+    if !expires.is_empty() {
+        note.push_str(&format!(" expires={expires}"));
+    }
+    let f = update(
+        op,
+        id,
+        &Update {
+            status: Some("accepted".into()),
+            note: Some(
+                MetadataOnly::scan(&note).map_err(|e| crate::error::Error::user(e.to_string()))?,
+            ),
+            accepted_reason: Some(p.reason.clone()),
+            accepted_owner: p.owner.clone(),
+            accepted_until: p.expires.clone(),
+            accepted_at: Some(accepted_at),
+            accepted_by: Some(accepted_by),
+            evidence: p.evidence.clone(),
+            ..Default::default()
+        },
+    )?;
+    op.append_ledger(
+        "finding.accepted",
+        Tier::ReadOnly.capability(),
+        TOOL_NAME,
+        "accepted",
+        &format!(
+            "finding={id} owner={owner} expires={expires} reason={}",
+            p.reason.as_str()
+        ),
+    )?;
+    Ok(f)
 }
 
 #[cfg(test)]

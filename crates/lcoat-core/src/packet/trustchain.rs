@@ -6,7 +6,7 @@ use std::path::Path;
 
 use crate::error::Result;
 use crate::evidence;
-use crate::operation::Operation;
+use crate::operation::{Operation, State as OpState};
 use crate::readiness::{self, State};
 use crate::root::file_exists;
 
@@ -41,7 +41,10 @@ pub struct TrustChain {
 pub const CURRENT_NEXT_STEP: &str = "Metadata trust chain is current.";
 
 /// `atlas_audit_closeout_verification_status`: status, path, problems.
-pub fn closeout_verification_status(op: &Operation, st: &State) -> (&'static str, String, usize) {
+pub fn closeout_verification_status<S: OpState>(
+    op: &Operation<S>,
+    st: &State,
+) -> (&'static str, String, usize) {
     if !st.closeout.present() {
         return ("missing", "-".into(), 0);
     }
@@ -60,7 +63,10 @@ pub fn closeout_verification_status(op: &Operation, st: &State) -> (&'static str
 }
 
 /// Verify the latest audit packet: status and path.
-pub fn audit_verification_status(op: &Operation, st: &State) -> (&'static str, String) {
+pub fn audit_verification_status<S: OpState>(
+    op: &Operation<S>,
+    st: &State,
+) -> (&'static str, String) {
     if !st.audit_packet.present() {
         return ("missing", "-".into());
     }
@@ -156,7 +162,7 @@ pub fn archive_next_step(st: &State, closeout: &str, audit: &str, review: &str) 
 }
 
 /// Gather the metadata-chain state for an operation.
-pub fn collect_trust_chain(op: &Operation) -> Result<TrustChain> {
+pub fn collect_trust_chain<S: OpState>(op: &Operation<S>) -> Result<TrustChain> {
     let st = readiness::collect(op)?;
     let (closeout_verification, closeout_path, closeout_problems) =
         closeout_verification_status(op, &st);

@@ -8,12 +8,12 @@
 //! here. The tamper harness (`conformance/tamper.sh`) and
 //! `conformance/readonly_diff.sh` are the proof.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::error::Result;
 use crate::fail;
 use crate::ledger;
-use crate::operation::Operation;
+use crate::operation::{Operation, State};
 use crate::root::file_exists;
 
 use super::{
@@ -94,10 +94,12 @@ pub struct VerifyResult {
     pub problems: usize,
     /// Table rows, formatted as the shell build prints them.
     pub rows: Vec<String>,
+    /// The lab root, for the format 1.1 `rel=` fallback.
+    root: PathBuf,
 }
 
 impl VerifyResult {
-    fn new(kind: Kind) -> Self {
+    fn new(kind: Kind, root: &Path) -> Self {
         Self {
             kind,
             status: "verified",
@@ -105,6 +107,26 @@ impl VerifyResult {
             gaps: 0,
             problems: 0,
             rows: Vec::new(),
+            root: root.to_path_buf(),
+        }
+    }
+
+    /// Format 1.1 relocation: when the recorded absolute path is gone and
+    /// the anchor line carries `rel=`, the root-relative path is used
+    /// instead. A v1 line has no `rel=`, so v1 verdicts are unchanged.
+    fn resolve(&self, path: &str, line: &str) -> String {
+        if path.is_empty() || file_exists(Path::new(path)) {
+            return path.to_owned();
+        }
+        let rel = anchor_token(line, "rel");
+        if rel.is_empty() {
+            return path.to_owned();
+        }
+        let candidate = self.root.join(rel);
+        if file_exists(&candidate) {
+            candidate.display().to_string()
+        } else {
+            path.to_owned()
         }
     }
 
@@ -134,7 +156,7 @@ impl VerifyResult {
             self.problems += 1;
             return;
         };
-        let path = anchor_path(line);
+        let path = &self.resolve(anchor_path(line), line);
         if path.is_empty() {
             self.row(display, "unverifiable", "-", "not recorded");
             self.gaps += 1;
@@ -184,7 +206,7 @@ impl VerifyResult {
             self.problems += 1;
             return;
         };
-        let path = anchor_path(line);
+        let path = &self.resolve(anchor_path(line), line);
         if path.is_empty() || path == "none" {
             self.row(
                 display,
@@ -240,7 +262,7 @@ impl VerifyResult {
             self.problems += 1;
             return;
         };
-        let path = anchor_path(line);
+        let path = &self.resolve(anchor_path(line), line);
         let expected_events = anchor_token(line, "events");
         let expected_sha = anchor_token(line, "sha256");
         if path.is_empty() || expected_events.is_empty() || expected_sha.is_empty() {
@@ -375,7 +397,7 @@ fn read_packet(path: &str, kind: &str) -> Result<String> {
     }
 }
 
-fn check_owner(text: &str, kind: &str, path: &str, op: &Operation) -> Result<()> {
+fn check_owner<S: State>(text: &str, kind: &str, path: &str, op: &Operation<S>) -> Result<()> {
     let id = field(text, "Operation ID");
     if id.is_empty() {
         fail!("{kind} is missing Operation ID: {path}");
@@ -396,10 +418,10 @@ pub const CLOSEOUT_ALLOW_LATER: &[&str] = &[
 pub const AUDIT_ALLOW_LATER: &[&str] = &["archive.packet.generated"];
 
 /// `atlas_closeout_verify_markdown_manifest`.
-pub fn closeout_verify(op: &Operation, manifest_path: &str) -> Result<VerifyResult> {
+pub fn closeout_verify<S: State>(op: &Operation<S>, manifest_path: &str) -> Result<VerifyResult> {
     let text = read_packet(manifest_path, "closeout manifest")?;
     check_owner(&text, "closeout manifest", manifest_path, op)?;
-    let mut v = VerifyResult::new(Kind::Closeout);
+    let mut v = VerifyResult::new(Kind::Closeout, &op.root.root);
     v.hash_anchor(&text, "Latest report", "Latest Report");
     v.hash_anchor(&text, "Evidence manifest", "Evidence Manifest");
     v.hash_anchor(&text, "Latest handoff", "Latest Handoff");
@@ -415,14 +437,13 @@ pub fn closeout_verify(op: &Operation, manifest_path: &str) -> Result<VerifyResu
 
 /// `atlas_audit_verify_markdown_packet`: two fixed rows, `ledger=` detail
 /// form, and a footer without anchor counts.
-pub fn audit_verify(op: &Operation, packet_path: &str) -> Result<VerifyResult> {
+pub fn audit_verify<S: State>(op: &Operation<S>, packet_path: &str) -> Result<VerifyResult> {
     let text = read_packet(packet_path, "audit packet")?;
     check_owner(&text, "audit packet", packet_path, op)?;
-    let mut v = VerifyResult::new(Kind::Audit);
+    let mut v = VerifyResult::new(Kind::Audit, &op.root.root);
 
-    let ledger_file = anchor_line(&text, "Operation ledger")
-        .map(anchor_path)
-        .unwrap_or("");
+    let ledger_line = anchor_line(&text, "Operation ledger").unwrap_or("");
+    let ledger_file = &v.resolve(anchor_path(ledger_line), ledger_line);
     let expected_events = bullet_value(&text, "Events");
     let expected_sha = bullet_value(&text, "Ledger SHA256");
     let closeout_manifest = bullet_value(&text, "Closeout manifest");
@@ -518,10 +539,10 @@ pub fn audit_verify(op: &Operation, packet_path: &str) -> Result<VerifyResult> {
 }
 
 /// `atlas_archive_verify_markdown_packet`.
-pub fn archive_verify(op: &Operation, packet_path: &str) -> Result<VerifyResult> {
+pub fn archive_verify<S: State>(op: &Operation<S>, packet_path: &str) -> Result<VerifyResult> {
     let text = read_packet(packet_path, "archive packet")?;
     check_owner(&text, "archive packet", packet_path, op)?;
-    let mut v = VerifyResult::new(Kind::Archive);
+    let mut v = VerifyResult::new(Kind::Archive, &op.root.root);
     for (label, display) in [
         ("Latest report", "Latest Report"),
         ("Evidence manifest", "Evidence Manifest"),
@@ -554,7 +575,7 @@ mod tests {
 
     #[test]
     fn rows_pad_label_and_status_per_kind() {
-        let mut v = VerifyResult::new(Kind::Closeout);
+        let mut v = VerifyResult::new(Kind::Closeout, Path::new("/"));
         v.row("Latest Report", "verified", "/p", "");
         v.row("Evidence Manifest", "unverifiable", "-", "not recorded");
         assert_eq!(v.rows[0], "Latest Report        verified       /p");
@@ -562,7 +583,7 @@ mod tests {
             v.rows[1],
             "Evidence Manifest    unverifiable   - (not recorded)"
         );
-        let mut a = VerifyResult::new(Kind::Archive);
+        let mut a = VerifyResult::new(Kind::Archive, Path::new("/"));
         a.row("Accepted Risk Review Packet", "not-recorded", "none", "");
         assert_eq!(a.rows[0], "Accepted Risk Review Packet not-recorded   none");
         assert_eq!(

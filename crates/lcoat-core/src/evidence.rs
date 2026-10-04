@@ -1,18 +1,32 @@
 //! `evidence.ndjson` and the artifacts it points at.
 //!
-//! The reading side: the index, per-target counts, the rows the brief and
-//! report print, and [`verify_artifacts`], which re-hashes every stored
-//! artifact against the sha256 recorded at capture time. Capturing evidence
-//! (copy, hash, verify the copy, index, ledger) is the phase 2 writer.
+//! Reading: the index, per-target counts, the rows the brief and report
+//! print, and [`verify_artifacts`], which re-hashes every stored artifact
+//! against the sha256 recorded at capture time.
+//!
+//! Writing ([`add`]): copy the artifact into `evidence/<id>/`, hash both
+//! copies, append the index record, append the format 1.1 manifest, append
+//! the ledger event, in that order (`docs/BLUEPRINT.md`, "Transaction
+//! order"). Only an [`Operation<Active>`] can add evidence. The artifact
+//! itself may be raw tool output (that is what evidence is); what must stay
+//! metadata-only is everything *about* it, so the kind, classification and
+//! target labels are [`MetadataOnly`].
 
 use std::path::{Path, PathBuf};
 
+use lcoat_format::clock;
+use lcoat_format::fsutil::{copy_private_new, mkdir_private};
 use lcoat_format::hash::Sha256Hex;
-use lcoat_format::json::Object;
+use lcoat_format::ids::{next_id, slugify};
+use lcoat_format::json::{Object, Value};
 use lcoat_format::ndjson;
 
 use crate::error::Result;
-use crate::root::file_exists;
+use crate::fail;
+use crate::metadata::MetadataOnly;
+use crate::operation::{Active, Operation};
+use crate::root::{TOOL_NAME, file_exists};
+use crate::tier::Tier;
 
 /// The evidence kind recorded for output captured by `adapter run`.
 pub const KIND_ADAPTER_OUTPUT: &str = "adapter-output";
@@ -25,6 +39,12 @@ pub fn index_file(op_dir: &Path) -> PathBuf {
 /// `evidence/` for an operation directory.
 pub fn dir(op_dir: &Path) -> PathBuf {
     op_dir.join("evidence")
+}
+
+/// `evidence/manifest.ndjson`: the format 1.1 manifest of stored artifacts,
+/// whose hash the closeout and archive packets anchor.
+pub fn manifest_file(op_dir: &Path) -> PathBuf {
+    dir(op_dir).join("manifest.ndjson")
 }
 
 /// One evidence index entry.
@@ -71,6 +91,182 @@ impl Record {
             redacted: o.bool("redacted"),
         }
     }
+}
+
+impl Record {
+    /// Encode in the shell build's field order.
+    pub fn to_object(&self) -> Object {
+        let s = |v: &str| Value::String(v.to_owned());
+        let mut o = Object::new();
+        o.insert("id", s(&self.id));
+        o.insert("operation", s(&self.operation));
+        o.insert("target", s(&self.target));
+        o.insert("kind", s(&self.kind));
+        o.insert("source_tool", s(&self.source_tool));
+        o.insert("source_path", s(&self.source_path));
+        o.insert("path", s(&self.path));
+        o.insert("sha256", s(&self.sha256));
+        o.insert("created_at", s(&self.created_at));
+        o.insert("classification", s(&self.classification));
+        o.insert("redacted", Value::Bool(self.redacted));
+        o
+    }
+}
+
+/// Inputs to [`add`].
+#[derive(Clone, Debug)]
+pub struct AddParams {
+    /// The file to capture.
+    pub source: PathBuf,
+    /// `artifact` when empty.
+    pub kind: Option<MetadataOnly>,
+    /// The operation's target when `None`.
+    pub target: Option<MetadataOnly>,
+    /// `internal` when empty.
+    pub classification: Option<MetadataOnly>,
+    /// Whether a redaction was applied to the source.
+    pub redacted: bool,
+    /// Ledger tool name; `atlas` when empty (adapters pass their name).
+    pub tool: String,
+}
+
+/// One format 1.1 manifest line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManifestEntry {
+    /// Evidence ID.
+    pub id: String,
+    /// Stored path relative to the operation directory.
+    pub path: String,
+    /// sha256 of the stored copy.
+    pub sha256: String,
+    /// Size in bytes.
+    pub bytes: u64,
+    /// When the manifest line was written.
+    pub recorded_at: String,
+}
+
+impl ManifestEntry {
+    /// Decode from a manifest object.
+    pub fn from_object(o: &Object) -> Self {
+        Self {
+            id: o.str("id").to_owned(),
+            path: o.str("path").to_owned(),
+            sha256: o.str("sha256").to_owned(),
+            bytes: match o.get("bytes") {
+                Some(Value::Number(n)) => n.parse().unwrap_or(0),
+                _ => 0,
+            },
+            recorded_at: o.str("recorded_at").to_owned(),
+        }
+    }
+
+    fn to_object(&self) -> Object {
+        let s = |v: &str| Value::String(v.to_owned());
+        let mut o = Object::new();
+        o.insert("id", s(&self.id));
+        o.insert("path", s(&self.path));
+        o.insert("sha256", s(&self.sha256));
+        o.insert("bytes", Value::Number(self.bytes.to_string()));
+        o.insert("recorded_at", s(&self.recorded_at));
+        o
+    }
+}
+
+/// Every manifest line, in order; a missing manifest is empty.
+pub fn manifest(op_dir: &Path) -> Result<Vec<ManifestEntry>> {
+    Ok(ndjson::read_file(&manifest_file(op_dir))?
+        .iter()
+        .map(ManifestEntry::from_object)
+        .collect())
+}
+
+/// `cmd_evidence_add`: preflight (read-only), claim an ID, copy, hash,
+/// verify the copy, append the index record, append the manifest, append
+/// the ledger event. Returns the index record.
+pub fn add(op: &Operation<Active>, p: &AddParams) -> Result<Record> {
+    if !file_exists(&p.source) {
+        fail!("evidence path is not a file: {}", p.source.display());
+    }
+    let kind = p.kind.as_ref().map_or("artifact", MetadataOnly::as_str);
+    let classification = p
+        .classification
+        .as_ref()
+        .map_or("internal", MetadataOnly::as_str);
+    let target = p
+        .target
+        .as_ref()
+        .map_or(op.target.as_str(), MetadataOnly::as_str);
+    let tool = if p.tool.is_empty() {
+        TOOL_NAME
+    } else {
+        p.tool.as_str()
+    };
+
+    let _lock = op.lock()?;
+    op.preflight(Tier::ReadOnly, tool, target, "add evidence artifact")?
+        .into_result()?;
+
+    let root = dir(&op.dir);
+    mkdir_private(&root)?;
+    let id = next_id(&root, "ev");
+    let id_dir = root.join(&id);
+    mkdir_private(&id_dir)?;
+    let base = p
+        .source
+        .file_name()
+        .map(|n| slugify(&n.to_string_lossy()))
+        .unwrap_or_default();
+    let name = if base.is_empty() {
+        "artifact".to_owned()
+    } else {
+        base
+    };
+    let relative = format!("evidence/{id}/{name}");
+    let destination = op.dir.join(&relative);
+
+    let sum = Sha256Hex::of_file(&p.source)?;
+    let bytes = copy_private_new(&p.source, &destination)?;
+    let copied = Sha256Hex::of_file(&destination)?;
+    if copied != sum {
+        fail!("evidence copy integrity check failed");
+    }
+    let rec = Record {
+        id: id.clone(),
+        operation: op.slug.clone(),
+        target: target.to_owned(),
+        kind: kind.to_owned(),
+        source_tool: TOOL_NAME.into(),
+        source_path: p.source.display().to_string(),
+        path: relative.clone(),
+        sha256: sum.as_str().to_owned(),
+        created_at: clock::timestamp(),
+        classification: classification.to_owned(),
+        redacted: p.redacted,
+    };
+    ndjson::append(&index_file(&op.dir), &rec.to_object())?;
+    ndjson::append(
+        &manifest_file(&op.dir),
+        &ManifestEntry {
+            id: id.clone(),
+            path: relative.clone(),
+            sha256: rec.sha256.clone(),
+            bytes,
+            recorded_at: rec.created_at.clone(),
+        }
+        .to_object(),
+    )?;
+    let detail = format!(
+        "evidence={id} kind={kind} sha256={} path={relative}",
+        rec.sha256
+    );
+    op.append_ledger(
+        "artifact.created",
+        Tier::ReadOnly.capability(),
+        tool,
+        "ok",
+        &detail,
+    )?;
+    Ok(rec)
 }
 
 /// The newest record per ID, filtered to `target` when non-empty, in
