@@ -428,3 +428,69 @@ fn crash_injection_leaves_states_the_verifiers_describe() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Found in the field run: `finding accept --expires 90d` stored the text
+/// "90d", which the readiness check (a date comparison) never treats as
+/// expired. Relative and date forms are now stored as the instant they
+/// name; anything else, and a date already past, is refused.
+#[test]
+fn finding_accept_stores_a_real_expiry() {
+    let root = fresh("accept");
+    ok(&lcoat(
+        &root,
+        &[
+            "target",
+            "add",
+            "node",
+            "10.10.10.5",
+            "--scope-status",
+            "in-scope",
+        ],
+    ));
+    ok(&lcoat(&root, &["op", "start", "acc", "node"]));
+    let f = ok(&lcoat(&root, &["finding", "add", "rsyslog 514 on tailnet"]));
+    let id = kv(&f, "id");
+    for (bad, why) in [
+        ("90", "--expires must be"),
+        ("soon", "--expires must be"),
+        ("0d", "--expires must be"),
+        ("99999999999999d", "--expires must be"),
+        ("2020-01-01", "already in the past"),
+    ] {
+        let e = err(&lcoat(
+            &root,
+            &[
+                "finding",
+                "accept",
+                &id,
+                "--reason",
+                "tailnet only",
+                "--expires",
+                bad,
+            ],
+        ));
+        assert!(e.contains(why), "{bad}: {e}");
+    }
+    let out = ok(&lcoat(
+        &root,
+        &[
+            "finding",
+            "accept",
+            &id,
+            "--reason",
+            "tailnet only",
+            "--owner",
+            "anthony",
+            "--expires",
+            "90d",
+        ],
+    ));
+    // LCOAT_NOW is 2026-10-02T07:40:00Z in these tests.
+    assert_eq!(kv(&out, "expires"), "2026-12-31T07:40:00Z");
+    let rec = std::fs::read_to_string(root.join("sessions/acc/findings.ndjson")).unwrap();
+    assert!(
+        rec.contains("\"accepted_until\":\"2026-12-31T07:40:00Z\""),
+        "{rec}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

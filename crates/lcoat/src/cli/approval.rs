@@ -29,29 +29,12 @@ fn tier_arg(name: &str) -> Result<Tier, super::CliError> {
 }
 
 /// `YYYY-MM-DD` (end of that day), a full timestamp, or `Nh`/`Nd` from now.
-fn parse_expiry(v: &str) -> Result<Utc, super::CliError> {
-    if let Some(t) = Utc::parse(v) {
-        return Ok(t);
-    }
-    if v.len() == 10
-        && let Some(t) = Utc::parse(&format!("{v}T23:59:59Z"))
-    {
-        return Ok(t);
-    }
-    if let Some(num) = v.strip_suffix('h').or_else(|| v.strip_suffix('d'))
-        && let Ok(n) = num.parse::<i64>()
-        && n > 0
-    {
-        let secs = if v.ends_with('h') {
-            n * 3600
-        } else {
-            n * 86_400
-        };
-        return Ok(Utc::from_unix(Utc::now().unix() + secs));
-    }
-    Err(fail(format!(
-        "--expires must be YYYY-MM-DD, YYYY-MM-DDTHH:MM:SSZ, <N>h or <N>d; got: {v}"
-    )))
+pub fn parse_expiry(v: &str) -> Result<Utc, super::CliError> {
+    lcoat_format::clock::parse_expiry(v, Utc::now()).ok_or_else(|| {
+        fail(format!(
+            "--expires must be YYYY-MM-DD, YYYY-MM-DDTHH:MM:SSZ, <N>h or <N>d (up to year 9999); got: {v}"
+        ))
+    })
 }
 
 fn grant(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {

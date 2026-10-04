@@ -127,6 +127,40 @@ pub fn today() -> String {
 }
 
 // Howard Hinnant's proleptic Gregorian algorithms.
+/// Latest instant an expiry may name: the end of year 9999, the last one
+/// the `YYYY-MM-DDTHH:MM:SSZ` form can print.
+pub const MAX_EXPIRY_SECS: i64 = 253_402_300_799;
+
+/// An expiry as operators type it: `YYYY-MM-DD` (the end of that day, UTC),
+/// a full `YYYY-MM-DDTHH:MM:SSZ`, or `<N>h` / `<N>d` from `now`. `None` for
+/// anything else, including a zero or negative count and a result past the
+/// end of year 9999 (no arithmetic can overflow). Used by `approval grant`
+/// and `finding accept`, so both store a real instant, never the text typed.
+pub fn parse_expiry(v: &str, now: Utc) -> Option<Utc> {
+    if let Some(t) = Utc::parse(v) {
+        return Some(t);
+    }
+    if v.len() == 10
+        && let Some(t) = Utc::parse(&format!("{v}T23:59:59Z"))
+    {
+        return Some(t);
+    }
+    let (num, unit) = match v.as_bytes().last() {
+        Some(b'h') => (&v[..v.len() - 1], 3600i64),
+        Some(b'd') => (&v[..v.len() - 1], 86_400i64),
+        _ => return None,
+    };
+    if num.is_empty() || num.len() > 12 || !num.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let n: i64 = num.parse().ok()?;
+    if n == 0 {
+        return None;
+    }
+    let secs = now.unix().checked_add(n.checked_mul(unit)?)?;
+    (secs <= MAX_EXPIRY_SECS).then(|| Utc::from_unix(secs))
+}
+
 fn days_in_month(y: i64, m: i64) -> i64 {
     match m {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -163,6 +197,42 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
 mod tests {
     /// Found by fuzz target `timestamp`: signs, impossible dates and leap
     /// seconds were accepted and printed back in a different spelling.
+    #[test]
+    fn parse_expiry_forms_and_limits() {
+        let now = Utc::parse("2026-10-02T07:40:00Z").unwrap();
+        let at = |v: &str| parse_expiry(v, now).map(Utc::timestamp);
+        assert_eq!(at("90d").as_deref(), Some("2026-12-31T07:40:00Z"));
+        assert_eq!(at("12h").as_deref(), Some("2026-10-02T19:40:00Z"));
+        assert_eq!(at("2027-01-15").as_deref(), Some("2027-01-15T23:59:59Z"));
+        assert_eq!(
+            at("2027-01-15T10:00:00Z").as_deref(),
+            Some("2027-01-15T10:00:00Z")
+        );
+        // Found in the field: "90d" used to be stored as text and never expire.
+        // Malformed, zero, signed and overflowing counts are refused.
+        for bad in [
+            "",
+            "d",
+            "0d",
+            "-5d",
+            "+5d",
+            "5 d",
+            "5w",
+            "90",
+            "99999999999999d",
+            "9223372036854775807h",
+            "2026-13-01",
+        ] {
+            assert_eq!(parse_expiry(bad, now), None, "{bad:?} accepted");
+        }
+        // 2,900,000 days from 2026 is year 9966; 3,000,000 is past 9999.
+        assert!(parse_expiry("2900000d", now).is_some(), "year 9966 refused");
+        assert!(
+            parse_expiry("3000000d", now).is_none(),
+            "past year 9999 accepted"
+        );
+    }
+
     #[test]
     fn parse_is_strict_and_canonical() {
         for bad in [

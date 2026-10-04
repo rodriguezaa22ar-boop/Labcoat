@@ -38,6 +38,7 @@ jobs:
           - envfile
           - metadata_scan
           - timestamp
+          - expiry
           - slug
           - packet_text
           - receipt

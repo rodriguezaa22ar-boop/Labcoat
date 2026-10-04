@@ -785,7 +785,9 @@ pub struct AcceptParams {
     pub reason: MetadataOnly,
     /// Risk owner.
     pub owner: Option<MetadataOnly>,
-    /// `YYYY-MM-DD` (or a timestamp) when the acceptance lapses.
+    /// `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM:SSZ` when the acceptance lapses;
+    /// anything else is refused (the readiness check compares dates as
+    /// text, so free text such as `90d` would never expire).
     pub expires: Option<String>,
     /// Evidence IDs to merge in.
     pub evidence: Vec<String>,
@@ -798,6 +800,20 @@ pub fn accept(op: &Operation<Active>, id: &str, p: &AcceptParams) -> Result<Find
     let accepted_by = crate::approval::operator();
     let owner = text(&p.owner);
     let expires = p.expires.clone().unwrap_or_default();
+    if !expires.is_empty() {
+        let instant = clock::Utc::parse(&expires).or_else(|| {
+            clock::Utc::parse(&format!("{expires}T23:59:59Z")).filter(|_| expires.len() == 10)
+        });
+        match instant {
+            None => fail!(
+                "acceptance expiry must be YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ; got: {expires}"
+            ),
+            Some(t) if t <= clock::Utc::now() => {
+                fail!("acceptance expiry {expires} is already in the past")
+            }
+            Some(_) => {}
+        }
+    }
     let mut note = format!("accepted risk: {}", p.reason.as_str());
     if !owner.is_empty() {
         note.push_str(&format!(" owner={owner}"));

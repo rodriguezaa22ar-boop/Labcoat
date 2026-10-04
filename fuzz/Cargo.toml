@@ -118,3 +118,10 @@ path = "fuzz_targets/op_files.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "expiry"
+path = "fuzz_targets/expiry.rs"
+test = false
+doc = false
+bench = false

@@ -350,6 +350,32 @@ pub fn timestamp(data: &[u8]) -> u64 {
     }
 }
 
+/// `parse_expiry`: operator-typed expiries for approvals and accepted risks.
+pub fn expiry(data: &[u8]) -> u64 {
+    use lcoat_format::clock::{MAX_EXPIRY_SECS, parse_expiry};
+    let s = text(data);
+    let now = Utc::from_unix(1_790_000_000);
+    match parse_expiry(&s, now) {
+        Some(t) => {
+            assert!(t.unix() <= MAX_EXPIRY_SECS, "expiry past year 9999: {s:?}");
+            let printed = t.timestamp();
+            assert_eq!(
+                Utc::parse(&printed),
+                Some(t),
+                "expiry does not print canonically"
+            );
+            if s.ends_with('h') || s.ends_with('d') {
+                assert!(
+                    t.unix() > now.unix(),
+                    "relative expiry not in the future: {s:?}"
+                );
+            }
+            2
+        }
+        None => 1,
+    }
+}
+
 /// `slugify`: names become directory and file names under the lab root.
 pub fn slug(data: &[u8]) -> u64 {
     let s = text(data);
@@ -831,6 +857,32 @@ pub static TARGETS: &[Target] = &[
             ])
         },
         dict: &[b"-", b"T", b":", b"Z", b"+", b"0", b"9", b" "],
+        cost: 1,
+    },
+    Target {
+        name: "expiry",
+        about: "approval and accepted-risk expiries: forms, overflow, year 9999",
+        run: expiry,
+        seeds: || {
+            s(&[
+                "90d",
+                "12h",
+                "2027-01-15",
+                "2027-01-15T10:00:00Z",
+                "9223372036854775807d",
+            ])
+        },
+        dict: &[
+            b"d",
+            b"h",
+            b"0",
+            b"9",
+            b"-",
+            b"+",
+            b"T",
+            b"Z",
+            b"99999999999",
+        ],
         cost: 1,
     },
     Target {

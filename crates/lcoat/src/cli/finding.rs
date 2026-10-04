@@ -167,8 +167,7 @@ fn note(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 }
 
 fn accept(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
-    const USAGE: &str =
-        "finding accept <id> --reason text [--owner owner] [--expires date] [--evidence id]...";
+    const USAGE: &str = "finding accept <id> --reason text [--owner owner] [--expires YYYY-MM-DD|timestamp|Nh|Nd] [--evidence id]...";
     need_args(1, args, USAGE)?;
     let id = args[0].clone();
     let mut reason = None;
@@ -181,7 +180,11 @@ fn accept(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
         match rest[i].as_str() {
             "--reason" => reason = Some(metadata("--reason", option(rest, i, USAGE)?)?),
             "--owner" => owner = Some(metadata("--owner", option(rest, i, USAGE)?)?),
-            "--expires" | "--until" => expires = Some(option(rest, i, USAGE)?.to_owned()),
+            // Same forms as approvals (YYYY-MM-DD, timestamp, Nh, Nd),
+            // stored as the instant they name.
+            "--expires" | "--until" => {
+                expires = Some(super::approval::parse_expiry(option(rest, i, USAGE)?)?.timestamp())
+            }
             "--evidence" => evidence.push(option(rest, i, USAGE)?.to_owned()),
             other => return Err(fail(format!("unknown finding accept option: {other}"))),
         }
