@@ -461,6 +461,24 @@ impl Snapshot {
                 ),
             );
         }
+        // Anything that touches the target needs it declared in-scope;
+        // `unknown`, `review` and records written before this rule are
+        // refused (field run 1). Recording evidence and findings (Tier 0)
+        // is not a contact with the target and stays allowed.
+        if capability != Tier::ReadOnly && self.target_scope_status != "in-scope" {
+            let status = if self.target_scope_status.is_empty() {
+                "unknown"
+            } else {
+                self.target_scope_status.as_str()
+            };
+            return deny(
+                format!("{detail} target-scope-status={status}"),
+                format!(
+                    "scope refused: target '{}' has scope status '{status}'; only an in-scope target can be contacted (lcoat target add {} <address> --scope-status in-scope, then start a new operation)",
+                    self.target, self.target
+                ),
+            );
+        }
         if contains(&self.blocked, cap) {
             return deny(
                 format!("{detail} blocked-capability={cap}"),

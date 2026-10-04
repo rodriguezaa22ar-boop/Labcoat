@@ -702,6 +702,16 @@ impl Operation<Active> {
     /// is the shell's; an interruption before the ledger append leaves a
     /// directory `op list` shows and `op verify` reports as missing ledger.
     pub fn start(root: &LabRoot, p: &StartParams) -> Result<(Self, Profile)> {
+        // Lab Coat is stricter than the shell here (field run 1): an
+        // unregistered name would become its own "address" and a scan would
+        // go wherever DNS sends it. The target must be declared first.
+        if load_target(root, &p.target)?.is_none() {
+            fail!(
+                "unknown target: {}; declare it first: lcoat target add {} <address> --scope-status in-scope",
+                p.target,
+                p.target
+            );
+        }
         let target = resolve_target(root, &p.target)?;
         if target.scope_status == "out-of-scope" {
             return Err(scope::out_of_scope_error(&target.target));

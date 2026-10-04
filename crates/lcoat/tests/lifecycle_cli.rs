@@ -578,3 +578,61 @@ fn any_target_identifier_lands_under_the_target() {
     }
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Field run 1, as typed: `target add` failed (a shell redirect), then
+/// `op start` and a Tier 2 nmap run went ahead on the bare name. Now the
+/// start is refused and says how to declare the target.
+#[test]
+fn undeclared_target_cannot_start_an_operation() {
+    let root = fresh("undeclared");
+    let e = err(&lcoat(
+        &root,
+        &[
+            "op",
+            "start",
+            "fedora-lan-check",
+            "fedora-lan",
+            "514 reachability",
+        ],
+    ));
+    assert!(e.contains("unknown target: fedora-lan"), "{e}");
+    assert!(
+        e.contains("lcoat target add fedora-lan <address> --scope-status in-scope"),
+        "{e}"
+    );
+    assert!(!root.join("sessions/fedora-lan-check").exists());
+    // Declared but not in-scope: the operation can be started and notes
+    // kept, but nothing contacts the target.
+    ok(&lcoat(
+        &root,
+        &[
+            "target",
+            "add",
+            "fedora-lan",
+            "192.0.2.10",
+            "--scope-status",
+            "review",
+        ],
+    ));
+    ok(&lcoat(
+        &root,
+        &["op", "start", "fedora-lan-check", "fedora-lan"],
+    ));
+    if cfg!(feature = "adapters") {
+        let e = err(&lcoat(
+            &root,
+            &[
+                "adapter",
+                "run",
+                "nmap",
+                "fedora-lan",
+                "--",
+                "-sV",
+                "-p",
+                "514",
+            ],
+        ));
+        assert!(e.contains("scope status 'review'"), "{e}");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}

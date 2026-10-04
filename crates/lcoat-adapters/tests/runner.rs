@@ -10,7 +10,7 @@ use lcoat_adapters::{RunParams, run};
 use lcoat_core::approval::{self, GrantParams};
 use lcoat_core::ledger;
 use lcoat_core::metadata::MetadataOnly;
-use lcoat_core::operation::{Operation, StartParams};
+use lcoat_core::operation::{NewTarget, Operation, StartParams, add_target};
 use lcoat_core::root::LabRoot;
 use lcoat_core::tier::Tier;
 use lcoat_format::clock::Utc;
@@ -19,7 +19,25 @@ fn fresh(name: &str) -> (LabRoot, PathBuf) {
     let dir = std::env::temp_dir().join(format!("lcoat-runner-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    (LabRoot::at(&dir).unwrap(), dir)
+    let root = LabRoot::at(&dir).unwrap();
+    declare(&root, "127.0.0.1", "in-scope");
+    (root, dir)
+}
+
+/// `target add <name> <name>` with the given scope status.
+fn declare(root: &LabRoot, name: &str, scope_status: &str) {
+    root.ensure_layout().unwrap();
+    add_target(
+        root,
+        &NewTarget {
+            name: name.into(),
+            address: name.into(),
+            scope_status: scope_status.into(),
+            criticality: "low".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
 }
 
 fn args(list: &[&str]) -> Vec<String> {
@@ -246,5 +264,71 @@ fn refusals_happen_before_anything_runs() {
     .unwrap();
     assert_eq!(out.tier, Tier::SafeValidation);
     assert_eq!(out.exit_code, 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Field run 1: an operation on a target that was never declared, or not
+/// declared in-scope, ran a Tier 2 nmap scan against the bare name. Starting
+/// on an undeclared target is refused, and a target whose scope status is
+/// not `in-scope` cannot be contacted at any tier above 0.
+#[test]
+fn only_declared_in_scope_targets_are_contacted() {
+    let (root, dir) = fresh("declared");
+    let err = Operation::start(
+        &root,
+        &StartParams {
+            name: "x".into(),
+            target: "fedora-lan".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("unknown target: fedora-lan"),
+        "{err}"
+    );
+    assert!(
+        !dir.join("sessions/x").exists(),
+        "refused start left a directory"
+    );
+
+    for status in ["unknown", "review"] {
+        let name = format!("box-{status}");
+        declare(&root, &name, status);
+        let (op, _) = Operation::start(
+            &root,
+            &StartParams {
+                name: format!("op-{status}"),
+                target: name.clone(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let err = run(
+            &op,
+            &RunParams {
+                adapter: "script".into(),
+                target: String::new(),
+                args: args(&["--tier", "1", "--", "/bin/echo", "x"]),
+                timeout: None,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains(&format!("scope status '{status}'")),
+            "{err}"
+        );
+        let events = op.events().unwrap();
+        let last = events.last().unwrap();
+        assert_eq!(last.event, "scope.preflight");
+        assert!(
+            last.detail
+                .contains(&format!("target-scope-status={status}")),
+            "{}",
+            last.detail
+        );
+        assert!(!events.iter().any(|e| e.event == "adapter.started"));
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

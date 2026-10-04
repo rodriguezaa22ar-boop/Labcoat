@@ -337,6 +337,18 @@ fn full_lifecycle_verifies_and_tampering_is_caught() {
 #[test]
 fn closed_operations_refuse_writes_by_type_and_by_record() {
     let (root, dir) = fresh_root("closed");
+    root.ensure_layout().unwrap();
+    add_target(
+        &root,
+        &NewTarget {
+            name: "10.0.0.1".into(),
+            address: "10.0.0.1".into(),
+            scope_status: "in-scope".into(),
+            criticality: "low".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let (op, _) = Operation::start(
         &root,
         &StartParams {
