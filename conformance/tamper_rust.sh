@@ -5,8 +5,8 @@
 # covers what the oracle cannot say. Each case builds a fresh closed operation
 # with the Rust binary (frozen clock), tampers with it in place, and checks the
 # verdict lines of the verifiers that exist only here: `evidence verify`, the
-# `Evidence Artifacts` and `Ledger Chain` lines of `op trust-chain`, and
-# `ledger chain-verify`. When ATLAS_REPO points at the shell build (23ba2d2),
+# `Evidence Artifacts`, `Evidence Bundle Files` and `Ledger Chain` lines of
+# `op trust-chain`, `ledger chain-verify` and `evidence bundle-verify`. When ATLAS_REPO points at the shell build (23ba2d2),
 # the same tampered root is also run through the shell's verifiers to show
 # the gap: every shell verdict stays `verified`.
 #
@@ -44,8 +44,9 @@ expect_exit() {
   if [ "$got" = "$want" ]; then pass "$label (exit $want)"; else fail "$label: exit $got, wanted $want"; fi
 }
 
-# fresh_root <name>: a closed operation with one artifact, one resolved
-# finding, report, handoff, closeout, audit and archive packets.
+# fresh_root <name> [bundle]: a closed operation with one artifact, one
+# resolved finding, report, handoff, closeout, audit and archive packets;
+# with `bundle`, an evidence bundle written before the report.
 fresh_root() {
   local root="$WORK/$1"; mkdir -p "$root"
   export LCOAT_ROOT="$root"   # for this subshell; callers set it again
@@ -53,6 +54,7 @@ fresh_root() {
   "$BIN" op start demo node authorized lab >/dev/null
   printf 'PORT 22 open ssh\n' >"$root/recon.txt"
   "$BIN" evidence add "$root/recon.txt" --kind scan-output --classification public >/dev/null
+  if [ "${2:-}" = bundle ]; then "$BIN" evidence bundle >/dev/null; "$BIN" evidence bundle-verify >/dev/null; fi
   "$BIN" finding add "SSH exposed" --level observed --severity low >/dev/null
   local fid; fid="$("$BIN" finding list | awk 'NR==1{print $1}')"
   "$BIN" finding resolve "$fid" --note firewalled >/dev/null
@@ -67,6 +69,10 @@ fresh_root() {
 
 ARTIFACT="sessions/demo/evidence/ev_20261002T074000Z/recon.txt"
 LEDGER="sessions/demo/ledger.ndjson"
+BUNDLE="sessions/demo/evidence-bundles/demo-evidence-bundle"
+BUNDLED="$BUNDLE/files/ev_20261002T074000Z-public-recon.txt"
+# The bundle manifest hash a recipient reads off the handoff packet.
+packet_bundle_sha() { awk '/^- Evidence bundle manifest: /{for(i=1;i<=NF;i++) if ($i ~ /^sha256=/) {sub(/^sha256=/,"",$i); print $i; exit}}' "$1/sessions/demo/handoff/demo-handoff.md"; }
 
 # The shell's verifiers on the same root, when the oracle is available.
 shell_says_verified() {
@@ -165,6 +171,65 @@ if [ "$before" != "$after" ] && [ -n "$before" ]; then
 else
   fail "checkpoint head did not change after truncation"
 fi
+
+echo "case 7: edit a file inside the evidence bundle"
+root="$(fresh_root bundle_edit bundle)"; export LCOAT_ROOT="$root"
+printf 'tampered\n' >>"$root/$BUNDLED"
+"$BIN" evidence bundle-verify --op demo 2>&1 | expect "bundle-verify names the file" "ev_20261002T074000Z        changed"
+expect_exit "bundle-verify" 1 "$BIN" evidence bundle-verify --op demo
+"$BIN" op trust-chain demo 2>&1 | expect "trust-chain line" "Evidence Bundle Files: attention-required"
+expect_exit "trust-chain --strict" 1 "$BIN" op trust-chain demo --strict
+# The packets anchor the manifest, not the copies; only the re-hash sees this.
+"$BIN" op verify demo 2>&1 | expect "op verify alone cannot see it" "Verification Status: verified"
+shell_says_verified "$root" "bundle_edit"
+
+echo "case 8: edit a bundled file and forge the bundle manifest to match"
+root="$(fresh_root bundle_forge bundle)"; export LCOAT_ROOT="$root"
+sha="$(packet_bundle_sha "$root")"
+cp -r "$root/$BUNDLE" "$WORK/bundle_forge_copy"
+for dir in "$root/$BUNDLE" "$WORK/bundle_forge_copy"; do
+  f="$dir/files/ev_20261002T074000Z-public-recon.txt"
+  old="$(sha256sum "$f" | cut -d' ' -f1)"; printf 'tampered\n' >>"$f"; new="$(sha256sum "$f" | cut -d' ' -f1)"
+  sed -i "s/$old/$new/g" "$dir/manifest.ndjson"
+done
+"$BIN" evidence bundle-verify --op demo 2>&1 | expect "the ledger anchor catches the forged manifest" "Manifest Anchor: changed anchor=ledger"
+"$BIN" evidence bundle-verify --op demo 2>&1 | expect "the evidence index disagrees with the forged source hash" "index-mismatch"
+expect_exit "bundle-verify" 1 "$BIN" evidence bundle-verify --op demo
+"$BIN" op verify demo 2>&1 | expect "op verify catches the bundle manifest" "Bundle Manifest      changed"
+expect_exit "op verify" 1 "$BIN" op verify demo
+"$BIN" op archive-verify demo 2>&1 | expect "archive-verify catches the bundle manifest" "Bundle Manifest        changed"
+"$BIN" op trust-chain demo 2>&1 | expect "trust-chain status" "Trust Chain Status: attention-required"
+# A recipient with only the copy and the hash from the handoff packet:
+env -u LCOAT_ROOT "$BIN" evidence bundle-verify "$WORK/bundle_forge_copy" --manifest-sha256 "$sha" 2>&1 | expect "the copy against the packet's hash" "Manifest Anchor: changed anchor=argument"
+expect_exit "copy with --manifest-sha256" 1 env -u LCOAT_ROOT "$BIN" evidence bundle-verify "$WORK/bundle_forge_copy" --manifest-sha256 "$sha"
+# Documented limit: with nothing to compare the manifest with, a consistent forgery is only `unanchored`.
+env -u LCOAT_ROOT "$BIN" evidence bundle-verify "$WORK/bundle_forge_copy" 2>&1 | expect "the copy without an anchor is only unanchored" "Verification Status: unanchored"
+shell_says_verified "$root" "bundle_forge"
+
+echo "case 9: add, link or delete files in a copied bundle"
+root="$(fresh_root bundle_copy bundle)"; export LCOAT_ROOT="$root"
+sha="$(packet_bundle_sha "$root")"
+cp -r "$root/$BUNDLE" "$WORK/bundle_copy_dir"
+env -u LCOAT_ROOT "$BIN" evidence bundle-verify "$WORK/bundle_copy_dir" --manifest-sha256 "$sha" 2>&1 | expect "an intact copy verifies anywhere" "Verification Status: verified"
+printf 'planted\n' >"$WORK/bundle_copy_dir/files/extra.txt"
+env -u LCOAT_ROOT "$BIN" evidence bundle-verify "$WORK/bundle_copy_dir" --manifest-sha256 "$sha" 2>&1 | expect "an unlisted file" "unlisted       files/extra.txt"
+expect_exit "unlisted file" 1 env -u LCOAT_ROOT "$BIN" evidence bundle-verify "$WORK/bundle_copy_dir" --manifest-sha256 "$sha"
+rm "$WORK/bundle_copy_dir/files/extra.txt"
+f="$WORK/bundle_copy_dir/files/ev_20261002T074000Z-public-recon.txt"
+cp "$f" "$WORK/elsewhere.txt"; rm "$f"; ln -s "$WORK/elsewhere.txt" "$f"
+env -u LCOAT_ROOT "$BIN" evidence bundle-verify "$WORK/bundle_copy_dir" --manifest-sha256 "$sha" 2>&1 | expect "a symlink is not followed" "not-a-file"
+rm "$f"
+env -u LCOAT_ROOT "$BIN" evidence bundle-verify "$WORK/bundle_copy_dir" --manifest-sha256 "$sha" 2>&1 | expect "a deleted file" "ev_20261002T074000Z        missing"
+
+echo "case 10: bundle evidence that changed since capture"
+root="$WORK/bundle_refuse"; mkdir -p "$root"; export LCOAT_ROOT="$root"
+"$BIN" target add node 10.10.10.5 --scope-status in-scope >/dev/null; "$BIN" op start demo node >/dev/null
+printf 'PORT 22 open ssh\n' >"$root/recon.txt"
+"$BIN" evidence add "$root/recon.txt" --classification public >/dev/null
+printf 'tampered\n' >>"$root/$ARTIFACT"
+"$BIN" evidence bundle 2>&1 | expect "the bundle is refused" "changed since capture"
+expect_exit "evidence bundle" 1 "$BIN" evidence bundle
+[ ! -e "$root/$BUNDLE" ] && pass "no bundle directory was left behind" || fail "a refused bundle left $BUNDLE"
 
 echo
 if [ "$FAIL" = 0 ]; then echo "TAMPER-RUST OK"; else echo "TAMPER-RUST FAILED"; exit 1; fi

@@ -8,7 +8,7 @@
 //! the typestate: a writer that needs an active operation calls
 //! `into_active()`, which refuses a closed one with the command to run.
 //! Commands that need no root (`version`, `hash`, `scan`, `receipt *`,
-//! `ledger *`) never resolve one.
+//! `ledger *`, `evidence bundle-verify <dir>`) never resolve one.
 
 use std::io::Write;
 
@@ -65,6 +65,8 @@ pub const USAGE: &str = "usage:
   lcoat evidence list [operation]
   lcoat evidence verify [operation] [--json]
   lcoat evidence diff <before-id> <after-id> [--op operation] [--json]
+  lcoat evidence bundle [bundle-name] [--include-unredacted]
+  lcoat evidence bundle-verify [--op operation] [bundle|dir] [--manifest-sha256 sha] [--json]
   lcoat finding add <title> [--level observed|inferred|validated] [--severity severity] [--confidence confidence] [--status status] [--impact text] [--recommendation text] [--evidence id]...
   lcoat finding resolve <id> [--evidence id]... [--note text]
   lcoat finding accept <id> --reason text [--owner owner] [--expires YYYY-MM-DD|timestamp|Nh|Nd] [--evidence id]...
