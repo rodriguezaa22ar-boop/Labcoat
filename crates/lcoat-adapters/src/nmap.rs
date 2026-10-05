@@ -129,9 +129,16 @@ impl BareFlag {
     }
 }
 
-/// NSE categories that stay at Tier 2. `vuln`, `brute`, `exploit`,
+/// NSE categories an operator may ask for. `vuln`, `brute`, `exploit`,
 /// `intrusive`, `dos`, `malware`, `external`, `auth`, `broadcast` and named
 /// scripts do not parse.
+///
+/// nmap tags scripts with several categories, so asking for `safe` alone
+/// also selects scripts that are `broadcast` (they probe the whole LAN),
+/// `external` (whois, ASN and geolocation services), `auth` or `vuln`: 113
+/// of 347 `safe` scripts in nmap 7.94. The command therefore never passes
+/// the operator's categories to nmap as given; it sends
+/// [`script_expression`], which subtracts [`EXCLUDED_SCRIPT_CATEGORIES`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(missing_docs)]
 pub enum ScriptCategory {
@@ -160,6 +167,72 @@ impl ScriptCategory {
             Self::Version => "version",
         }
     }
+}
+
+/// Categories subtracted from every script selection, whatever else a
+/// script is tagged with.
+pub const EXCLUDED_SCRIPT_CATEGORIES: [&str; 9] = [
+    "intrusive",
+    "broadcast",
+    "external",
+    "auth",
+    "brute",
+    "vuln",
+    "exploit",
+    "dos",
+    "malware",
+];
+
+/// The `--script` value for `cats`: `(safe or version) and not (intrusive
+/// or broadcast or ...)`, in the order given, without repeats.
+pub fn script_expression(cats: &[ScriptCategory]) -> String {
+    let mut wanted: Vec<&str> = Vec::new();
+    for c in cats {
+        if !wanted.contains(&c.as_str()) {
+            wanted.push(c.as_str());
+        }
+    }
+    format!(
+        "({}) and not ({})",
+        wanted.join(" or "),
+        EXCLUDED_SCRIPT_CATEGORIES.join(" or ")
+    )
+}
+
+/// nmap's own data directory for the binary at `nmap`
+/// (`<prefix>/bin/nmap` -> `<prefix>/share/nmap`). Passed as `--datadir`
+/// whenever scripts run, so nmap reads its own `script.db` and scripts
+/// before `~/.nmap` or the working directory, where a planted script could
+/// tag itself `safe`. Refused when it is missing or writable by group or
+/// others.
+pub fn script_datadir(nmap: &std::path::Path) -> Result<std::path::PathBuf> {
+    let dir = nmap
+        .parent()
+        .and_then(std::path::Path::parent)
+        .map(|prefix| prefix.join("share").join("nmap"))
+        .unwrap_or_default();
+    let db = dir.join("scripts").join("script.db");
+    if !db.is_file() {
+        fail!(
+            "nmap adapter: cannot find nmap's script database at {}; refusing to run scripts from anywhere else",
+            db.display()
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for p in [dir.clone(), dir.join("scripts"), db] {
+            let mode = std::fs::metadata(&p)?.permissions().mode();
+            if mode & 0o022 != 0 {
+                fail!(
+                    "nmap adapter: {} is writable by other users (mode {:o}); refusing to run scripts from it",
+                    p.display(),
+                    mode & 0o777
+                );
+            }
+        }
+    }
+    Ok(dir)
 }
 
 fn positive(v: &str, flag: &str) -> Result<u32> {
@@ -356,6 +429,58 @@ fn bare_str(f: BareFlag) -> &'static str {
     }
 }
 
+/// Whether `parsed` makes nmap run NSE scripts (`--script`, `-sC`, `-A`).
+fn runs_scripts(parsed: &[NmapArg]) -> bool {
+    parsed.iter().any(|a| {
+        matches!(
+            a,
+            NmapArg::Script(_) | NmapArg::Bare(BareFlag::Sc) | NmapArg::Bare(BareFlag::A)
+        )
+    })
+}
+
+/// The argv for a parsed invocation. Every script selection (`--script`,
+/// and the `default` scripts that `-sC` and `-A` imply) becomes one
+/// `--script` expression with the excluded categories subtracted, read from
+/// `datadir`; `-A` is spelled out as `-O -sV --traceroute` so it cannot
+/// pull in the unfiltered default set.
+fn command_argv(
+    target: &ScopedTarget,
+    parsed: &[NmapArg],
+    datadir: Option<&std::path::Path>,
+) -> Result<Vec<String>> {
+    let address = target.address();
+    if address.is_empty() || address.starts_with('-') {
+        fail!("nmap adapter: invalid target address {address:?}");
+    }
+    let mut argv = vec!["nmap".to_owned()];
+    let mut cats: Vec<ScriptCategory> = Vec::new();
+    for a in parsed {
+        match a {
+            NmapArg::Script(c) => cats.extend(c),
+            NmapArg::Bare(BareFlag::Sc) => cats.push(ScriptCategory::Default),
+            NmapArg::Bare(BareFlag::A) => {
+                cats.push(ScriptCategory::Default);
+                argv.extend(["-O".into(), "-sV".into(), "--traceroute".into()]);
+            }
+            other => argv.extend(other.argv()),
+        }
+    }
+    if !cats.is_empty() {
+        let Some(dir) = datadir else {
+            fail!("nmap adapter: scripts requested but nmap's data directory is unknown");
+        };
+        argv.push("--datadir".into());
+        argv.push(dir.display().to_string());
+        argv.push("--script".into());
+        argv.push(script_expression(&cats));
+    }
+    argv.push("-oX".into());
+    argv.push("-".into());
+    argv.push(address.to_owned());
+    Ok(argv)
+}
+
 impl Adapter for Nmap {
     fn name(&self) -> &'static str {
         "nmap"
@@ -369,18 +494,12 @@ impl Adapter for Nmap {
     /// the scope only.
     fn command(&self, target: &ScopedTarget, args: &[String]) -> Result<Vec<String>> {
         let parsed = NmapArg::parse_all(args)?;
-        let address = target.address();
-        if address.is_empty() || address.starts_with('-') {
-            fail!("nmap adapter: invalid target address {address:?}");
-        }
-        let mut argv = vec!["nmap".to_owned()];
-        for a in &parsed {
-            argv.extend(a.argv());
-        }
-        argv.push("-oX".into());
-        argv.push("-".into());
-        argv.push(address.to_owned());
-        Ok(argv)
+        let datadir = if runs_scripts(&parsed) {
+            Some(script_datadir(&crate::runner::look_path("nmap")?)?)
+        } else {
+            None
+        };
+        command_argv(target, &parsed, datadir.as_deref())
     }
 
     fn parse(&self, stdout: &[u8]) -> Vec<ProposedFinding> {
@@ -780,12 +899,16 @@ mod tests {
     #[test]
     fn command_puts_the_scoped_address_last() {
         let t = ScopedTarget::new_for_test("node", "10.10.10.5", Tier::ActiveRecon);
-        let argv = Nmap
-            .command(
-                &t,
-                &args(&["-sV", "--top-ports=100", "-p22,80", "--script", "safe"]),
-            )
-            .unwrap();
+        let parsed = NmapArg::parse_all(&args(&[
+            "-sV",
+            "--top-ports=100",
+            "-p22,80",
+            "--script",
+            "safe",
+        ]))
+        .unwrap();
+        let argv =
+            command_argv(&t, &parsed, Some(std::path::Path::new("/usr/share/nmap"))).unwrap();
         assert_eq!(
             argv,
             [
@@ -795,13 +918,91 @@ mod tests {
                 "100",
                 "-p",
                 "22,80",
+                "--datadir",
+                "/usr/share/nmap",
                 "--script",
-                "safe",
+                "(safe) and not (intrusive or broadcast or external or auth or brute or vuln or exploit or dos or malware)",
                 "-oX",
                 "-",
                 "10.10.10.5"
             ]
         );
+    }
+
+    /// Review 2026-10-05: `--script safe` selected 113 broadcast, external,
+    /// auth, intrusive or vuln scripts in nmap 7.94, and `-sC`/`-A` read
+    /// scripts from `~/.nmap` even with the environment scrubbed.
+    #[test]
+    fn every_script_selection_is_filtered_and_read_from_nmaps_own_datadir() {
+        let t = ScopedTarget::new_for_test("node", "10.10.10.5", Tier::ActiveRecon);
+        let dir = std::path::Path::new("/opt/nmap/share/nmap");
+        let run = |a: &[&str]| {
+            command_argv(&t, &NmapArg::parse_all(&args(a)).unwrap(), Some(dir)).unwrap()
+        };
+        let not = "and not (intrusive or broadcast or external or auth or brute or vuln or exploit or dos or malware)";
+
+        let argv = run(&["-sC", "--script", "safe,default,discovery"]);
+        assert!(!argv.contains(&"-sC".to_owned()), "{argv:?}");
+        assert_eq!(argv.iter().filter(|a| *a == "--script").count(), 1);
+        assert!(
+            argv.contains(&format!("(default or safe or discovery) {not}")),
+            "{argv:?}"
+        );
+        assert!(
+            argv.windows(2)
+                .any(|w| w == ["--datadir", "/opt/nmap/share/nmap"])
+        );
+
+        let argv = run(&["-A", "-T4"]);
+        assert!(!argv.contains(&"-A".to_owned()), "{argv:?}");
+        for f in ["-O", "-sV", "--traceroute", "-T4"] {
+            assert!(argv.contains(&f.to_owned()), "{f} in {argv:?}");
+        }
+        assert!(argv.contains(&format!("(default) {not}")), "{argv:?}");
+
+        // No scripts: no datadir needed, none passed.
+        let parsed = NmapArg::parse_all(&args(&["-sV"])).unwrap();
+        let argv = command_argv(&t, &parsed, None).unwrap();
+        assert!(!argv.iter().any(|a| a == "--datadir" || a == "--script"));
+        // Scripts without a known datadir are refused, not run unpinned.
+        let parsed = NmapArg::parse_all(&args(&["-sC"])).unwrap();
+        assert!(command_argv(&t, &parsed, None).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_script_datadir_is_nmaps_own_and_not_writable_by_others() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!("lcoat-nse-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let scripts = base.join("share/nmap/scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        std::fs::create_dir_all(base.join("bin")).unwrap();
+        let nmap = base.join("bin/nmap");
+        assert!(
+            script_datadir(&nmap)
+                .unwrap_err()
+                .to_string()
+                .contains("script database")
+        );
+        std::fs::write(scripts.join("script.db"), "").unwrap();
+        for d in [base.join("share/nmap"), scripts.clone()] {
+            std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::set_permissions(
+            scripts.join("script.db"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        assert_eq!(script_datadir(&nmap).unwrap(), base.join("share/nmap"));
+        std::fs::set_permissions(&scripts, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(
+            script_datadir(&nmap)
+                .unwrap_err()
+                .to_string()
+                .contains("writable by other users")
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// Field run 1: from a NAT'd VM, firewalld rejected nmap's unprivileged

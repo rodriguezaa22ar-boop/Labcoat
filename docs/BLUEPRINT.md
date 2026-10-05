@@ -144,7 +144,7 @@ Atomic writes (temp file in the same directory, `fsync`, rename) apply to every 
 - No shell. `std::process::Command` with argv, environment cleared to `PATH` and locale, stdin closed, working directory the run's temp dir.
 - Output is captured to `evidence/<id>/` as a file and hashed; nothing from it enters a ledger detail or packet except counts and the hash. The nmap XML parser produces metadata (open ports, service names) for the report and finding suggestions; the parser is fuzzed.
 - Vantage is recorded on every run: hostname and the source address `nmap` reports (or the default route address when a tool reports none), as `vantage=` tokens on `adapter.started` and fields on the evidence record. A scan of astra from astra and a scan from the Mac over Tailscale become distinguishable in the trail.
-- Tier is a property of the adapter and the arguments, not a flag the operator sets: `nmap -sn` is Tier 1, `-sV` is Tier 2, anything that parses to a NSE category outside `safe`/`default`/`discovery`/`version` does not parse at all.
+- Tier is a property of the adapter and the arguments, not a flag the operator sets: `nmap -sn` is Tier 1, `-sV` is Tier 2, anything that parses to a NSE category outside `safe`/`default`/`discovery`/`version` does not parse at all, and the accepted ones are sent with the risky categories subtracted (see the 2026-10-05 note below).
 
 ### Format 1.1 details fixed now
 
@@ -185,6 +185,14 @@ Everything above except the last clause is done and checked by `conformance/cros
 Twice in the field a `<placeholder>` in a pasted command became a shell redirect (one of them let `op start` run on an undeclared target). Commands that create something now end with `next: lcoat ...` lines carrying the real ids, quoted for bash and zsh (`'...'` with `'\''`; plain words bare): `target add` (start an operation, or a note that a non-in-scope target will not be contacted), `finding add` (resolve or accept that finding), `op close` (closeout by name), and `adapter run`, which prints one ready-to-run `finding add` per proposed finding with this run's evidence id. Titles there come from service banners chosen by the scanned host, so the quoting is tested through a real bash with command substitution, backticks, quotes and globs, and a printed line is executed in the CLI tests. `op status` gains an `Adapter Runs:` line when there are any (the shell's `Recon Runs` counts a different feature and stays as it is, so shell-written operations print byte-identically).
 
 This also closed a quiet gap: the trust chain used to take any recorded review packet as verified without reading it (inherited from Lite). It now verifies the latest one, so a changed finding index after the review shows `Accepted Risk Review Packet: attention-required`.
+### NSE scripts: subtract the risky categories, read nmap's own scripts (review 2026-10-05)
+
+nmap tags each script with several categories, so the four accepted ones were not the boundary they looked like. In nmap 7.94, `--script safe` selects 347 scripts and 113 of them are also `broadcast` (they probe the whole LAN, not the scoped host), `external` (whois, ASN and geolocation lookups to third parties), `auth` (e.g. `http-default-accounts` tries default credentials), `intrusive` or `vuln`. `-sC` and `-A` run the `default` set, which includes `auth`, `external` and `vuln` scripts too. And nmap reads `script.db` from `~/.nmap/scripts` before its own (it finds the home directory even with the environment scrubbed), so a planted script tagged `safe` ran. Both were reproduced here.
+
+- Every script selection becomes one expression: `(<categories>) and not (intrusive or broadcast or external or auth or brute or vuln or exploit or dos or malware)`. `-sC` adds `default` to it; `-A` is spelled out as `-O -sV --traceroute` plus `default`, so nothing reaches nmap unfiltered. On 7.94 `safe` drops from 347 scripts to 231.
+- Whenever scripts run, `--datadir <prefix>/share/nmap` is passed, worked out from the nmap binary the runner resolves (`/usr/bin/nmap` → `/usr/share/nmap`, Homebrew's `/opt/homebrew/bin/nmap` → `/opt/homebrew/share/nmap`). The run is refused if that directory has no `scripts/script.db`, or if it, `scripts/` or `script.db` is writable by group or others.
+- Operator-facing arguments are unchanged; the recorded argv shows the expression and the datadir.
+
 ### Fuzzing (after phase 2)
 
 Thirteen targets, each a function in `crates/lcoat-fuzz/src/targets.rs` that feeds bytes to a parser the way the binary does and asserts what makes the parser safe to trust, not only that it does not panic:
