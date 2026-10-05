@@ -185,6 +185,17 @@ Everything above except the last clause is done and checked by `conformance/cros
 Twice in the field a `<placeholder>` in a pasted command became a shell redirect (one of them let `op start` run on an undeclared target). Commands that create something now end with `next: lcoat ...` lines carrying the real ids, quoted for bash and zsh (`'...'` with `'\''`; plain words bare): `target add` (start an operation, or a note that a non-in-scope target will not be contacted), `finding add` (resolve or accept that finding), `op close` (closeout by name), and `adapter run`, which prints one ready-to-run `finding add` per proposed finding with this run's evidence id. Titles there come from service banners chosen by the scanned host, so the quoting is tested through a real bash with command substitution, backticks, quotes and globs, and a printed line is executed in the CLI tests. `op status` gains an `Adapter Runs:` line when there are any (the shell's `Recon Runs` counts a different feature and stays as it is, so shell-written operations print byte-identically).
 
 This also closed a quiet gap: the trust chain used to take any recorded review packet as verified without reading it (inherited from Lite). It now verifies the latest one, so a changed finding index after the review shows `Accepted Risk Review Packet: attention-required`.
+### A target is exactly one host (review 2026-10-05)
+
+`target add net 10.0.0.5/8 --scope-status in-scope` used to succeed, and the preflight then allowed a Tier 2 scan of it as "one in-scope target": nmap expands CIDR (`/8`), octet ranges (`192.168.1-254.1`) and wildcards itself, so the scope record named one target while the scan reached a network. A registered target with an empty address also fell back to its name, which DNS then resolved: field run 1's undeclared-target bug by another door.
+
+- `scope::validate_address` accepts exactly one IPv4 or IPv6 address (Rust's parser, so no leading zeros, no zone ids, no brackets) or one RFC 1123 DNS name (labels of letters, digits and inner hyphens, at most 63 characters each and 253 in all). A name whose last label is digits and hyphens must be an IP, which catches ranges and `10.0.0.256`.
+- It runs at three layers: `target add` refuses the record; the preflight denies any tier above 0 whose contact address fails it (recorded as `scope.preflight denied ... invalid-address`, so records on disk from before this rule are caught before anything runs); and the nmap adapter checks again before building argv. Tier 0 (recording evidence and findings) is not a contact and is unaffected.
+- A registered target with no address cannot start an operation; the error names the record to fix.
+- `ScopedTarget` now always carries the snapshot's contact address; the preflight has already refused any other identifier.
+
+A deliberate divergence: the shell stores and uses the address as given. The conformance scenarios use single addresses, so their output is unchanged.
+
 ### Fuzzing (after phase 2)
 
 Thirteen targets, each a function in `crates/lcoat-fuzz/src/targets.rs` that feeds bytes to a parser the way the binary does and asserts what makes the parser safe to trust, not only that it does not panic:

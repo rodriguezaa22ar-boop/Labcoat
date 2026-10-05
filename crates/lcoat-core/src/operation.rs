@@ -138,7 +138,8 @@ pub struct NewTarget {
 }
 
 /// Write a new target record in the shell build's key order; returns the
-/// slug. Refuses an existing slug, an empty slug, or invalid enumerations.
+/// slug. Refuses an existing slug, an empty slug, invalid enumerations, or
+/// an address that is not exactly one host.
 pub fn add_target(root: &LabRoot, t: &NewTarget) -> Result<String> {
     let slug = slugify(&t.name);
     if !is_safe_slug(&slug) {
@@ -159,6 +160,7 @@ pub fn add_target(root: &LabRoot, t: &NewTarget) -> Result<String> {
             t.criticality
         );
     }
+    scope::validate_address(&t.address)?;
     let _lock = Lock::acquire(&root.atlas_state)?;
     let path = root.targets_dir.join(format!("{slug}.env"));
     if path.symlink_metadata().is_ok() {
@@ -204,11 +206,15 @@ pub fn resolve_target(root: &LabRoot, input: &str) -> Result<TargetInfo> {
     } else {
         t.name.clone()
     };
-    let address = if t.address.is_empty() {
-        name.clone()
-    } else {
-        t.address.clone()
-    };
+    // Falling back to the name would hand a DNS lookup the choice of host
+    // (field run 1); a record with no address cannot start an operation.
+    if t.address.is_empty() {
+        fail!(
+            "target '{name}' has no address recorded; set ADDRESS= in {} to one IP address or DNS name",
+            t.file.display()
+        );
+    }
+    let address = t.address.clone();
     Ok(TargetInfo {
         target: name.clone(),
         address,
@@ -462,12 +468,13 @@ impl<S: State> Operation<S> {
         let snap = self.snapshot()?;
         self.preflight(capability, tool, target, reason)?
             .into_result()?;
-        let address = if snap.target_matches(target) && !snap.target_address.is_empty() {
-            snap.target_address.clone()
-        } else {
-            target.to_owned()
-        };
-        Ok(ScopedTarget::new(target, &address, capability))
+        // The preflight refused any target that is not the snapshot's and
+        // any contact address that is not exactly one host.
+        Ok(ScopedTarget::new(
+            target,
+            snap.contact_address(),
+            capability,
+        ))
     }
 
     /// `atlas_ledger_append_current`: append an event for this operation.

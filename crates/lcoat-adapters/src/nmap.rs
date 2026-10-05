@@ -370,7 +370,9 @@ impl Adapter for Nmap {
     fn command(&self, target: &ScopedTarget, args: &[String]) -> Result<Vec<String>> {
         let parsed = NmapArg::parse_all(args)?;
         let address = target.address();
-        if address.is_empty() || address.starts_with('-') {
+        // The preflight already checked this; nmap expands networks and
+        // ranges itself, so the adapter refuses them too.
+        if address.starts_with('-') || lcoat_core::scope::validate_address(address).is_err() {
             fail!("nmap adapter: invalid target address {address:?}");
         }
         let mut argv = vec!["nmap".to_owned()];

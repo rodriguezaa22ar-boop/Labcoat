@@ -962,3 +962,68 @@ fn next_lines_run_as_printed() {
     assert!(String::from_utf8_lossy(&r.stdout).contains("nothing above Tier 0 will contact"));
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn a_target_address_must_name_exactly_one_host() {
+    let root = fresh("address");
+    for bad in [
+        "10.0.0.5/8",
+        "192.168.1-254.1",
+        "*.*.*.*",
+        "a.lab,b.lab",
+        "",
+    ] {
+        let e = err(&lcoat(
+            &root,
+            &["target", "add", "net", bad, "--scope-status", "in-scope"],
+        ));
+        assert!(
+            e.contains("exactly one IP address or one DNS name"),
+            "{bad:?}: {e}"
+        );
+    }
+    assert!(!root.join("targets/net.env").exists());
+
+    // Records written before this rule (or by hand) are caught at contact
+    // time: the preflight is denied and recorded, nothing is run.
+    let targets = root.join("targets");
+    std::fs::create_dir_all(&targets).unwrap();
+    std::fs::write(
+        targets.join("wide.env"),
+        "NAME=wide\nADDRESS=10.0.0.0/8\nSCOPE_STATUS=in-scope\nCRITICALITY=unknown\nTAGS=''\nOWNER=''\nNOTES=''\nCREATED_AT=2026-10-01T00:00:00Z\n",
+    )
+    .unwrap();
+    ok(&lcoat(&root, &["op", "start", "wide-check", "wide"]));
+    let e = err(&lcoat(&root, &["scope", "check", "active-recon", "wide"]));
+    assert!(e.contains("is a network"), "{e}");
+    if cfg!(feature = "adapters") {
+        let e = err(&lcoat(
+            &root,
+            &[
+                "adapter",
+                "run",
+                "script",
+                "wide",
+                "--tier",
+                "1",
+                "--",
+                "/bin/true",
+            ],
+        ));
+        assert!(e.contains("is a network"), "{e}");
+    }
+    let ledger = std::fs::read_to_string(root.join("sessions/wide-check/ledger.ndjson")).unwrap();
+    assert!(ledger.contains("invalid-address"), "{ledger}");
+    assert!(!ledger.contains("adapter.started"), "{ledger}");
+    ok(&lcoat(&root, &["op", "close", "--force"]));
+
+    // A record with no address cannot start an operation: falling back to
+    // the name would let DNS choose the host.
+    std::fs::write(
+        targets.join("bare.env"),
+        "NAME=bare\nADDRESS=''\nSCOPE_STATUS=in-scope\nCRITICALITY=unknown\nTAGS=''\nOWNER=''\nNOTES=''\nCREATED_AT=2026-10-01T00:00:00Z\n",
+    )
+    .unwrap();
+    let e = err(&lcoat(&root, &["op", "start", "bare-check", "bare"]));
+    assert!(e.contains("has no address recorded"), "{e}");
+}
