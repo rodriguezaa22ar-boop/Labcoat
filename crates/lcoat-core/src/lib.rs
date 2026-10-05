@@ -30,6 +30,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod approval;
+pub mod bundle;
 pub mod chain;
 pub mod crash;
 pub mod error;

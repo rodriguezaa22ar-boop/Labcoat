@@ -408,6 +408,9 @@ fn check_owner<S: State>(text: &str, kind: &str, path: &str, op: &Operation<S>) 
     Ok(())
 }
 
+/// The format 1.1 anchor line for an evidence bundle's manifest.
+pub const BUNDLE_MANIFEST: &str = "Evidence bundle manifest";
+
 /// Events allowed after a closeout manifest's anchored ledger prefix.
 pub const CLOSEOUT_ALLOW_LATER: &[&str] = &[
     "audit.packet.generated",
@@ -424,6 +427,11 @@ pub fn closeout_verify<S: State>(op: &Operation<S>, manifest_path: &str) -> Resu
     let mut v = VerifyResult::new(Kind::Closeout, &op.root.root);
     v.hash_anchor(&text, "Latest report", "Latest Report");
     v.hash_anchor(&text, "Evidence manifest", "Evidence Manifest");
+    // Format 1.1: present only when a bundle was recorded, so a v1 manifest
+    // (and the shell's table) is unchanged.
+    if anchor_line(&text, BUNDLE_MANIFEST).is_some() {
+        v.hash_anchor(&text, BUNDLE_MANIFEST, "Bundle Manifest");
+    }
     v.hash_anchor(&text, "Latest handoff", "Latest Handoff");
     v.ledger_anchor(&text, Some(CLOSEOUT_ALLOW_LATER));
     v.hash_anchor(&text, "Operation env", "Operation Env");
@@ -555,6 +563,9 @@ pub fn archive_verify<S: State>(op: &Operation<S>, packet_path: &str) -> Result<
         ("Latest audit packet", "Latest Audit Packet"),
     ] {
         v.hash_anchor_archive(&text, label, display);
+        if label == "Evidence manifest" && anchor_line(&text, BUNDLE_MANIFEST).is_some() {
+            v.hash_anchor_archive(&text, BUNDLE_MANIFEST, "Bundle Manifest");
+        }
     }
     v.ledger_anchor(&text, None);
     v.finish();

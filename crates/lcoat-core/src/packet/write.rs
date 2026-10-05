@@ -21,6 +21,7 @@ use lcoat_format::clock;
 use lcoat_format::fsutil::{mkdir_private, write_private};
 use lcoat_format::ids::{is_safe_slug, slugify};
 
+use crate::bundle;
 use crate::error::Result;
 use crate::evidence;
 use crate::fail;
@@ -86,6 +87,10 @@ pub fn latest<S: State>(op: &Operation<S>, kind: &str) -> Result<Written> {
         path: PathBuf::from(&path),
         sha256: sha_for_file(&path),
     })
+}
+
+fn or_value<'a>(v: &'a str, fallback: &'a str) -> &'a str {
+    if v.is_empty() { fallback } else { v }
 }
 
 fn count_line(label: &str, n: usize) -> String {
@@ -162,6 +167,58 @@ fn manifest_line<S: State>(op: &Operation<S>) -> String {
     } else {
         "- Evidence manifest: none".to_owned()
     }
+}
+
+/// The latest recorded evidence bundle as the packets name it, or `None`
+/// (`atlas_handoff_latest_bundle_fields`). The manifest hash is the one the
+/// ledger recorded when the bundle was written (format 1.1), so a manifest
+/// edited before a packet is rendered is still caught by its verifier; a
+/// shell-written bundle has none recorded, and its current hash is used.
+struct BundleRef {
+    at: String,
+    slug: String,
+    dir: String,
+    manifest: String,
+    manifest_sha: String,
+    files: String,
+    include_unredacted: String,
+}
+
+fn bundle_ref<S: State>(op: &Operation<S>, st: &readiness::State) -> Option<BundleRef> {
+    if !st.bundle.present() {
+        return None;
+    }
+    let r = bundle::Recorded::parse(&st.bundle.at, &st.bundle.detail);
+    let dir = r.dir(&op.dir)?;
+    let manifest = dir.join(bundle::MANIFEST).display().to_string();
+    let manifest_sha = if r.manifest_sha256.is_empty() {
+        sha_for_file(&manifest)
+    } else {
+        r.manifest_sha256.clone()
+    };
+    Some(BundleRef {
+        at: r.at,
+        slug: r.slug,
+        dir: dir.display().to_string(),
+        manifest,
+        manifest_sha,
+        files: r.files,
+        include_unredacted: r.include_unredacted,
+    })
+}
+
+/// `- Evidence bundle manifest:`: the shell's handoff and closeout call this
+/// line `Evidence manifest`, a slot Lab Coat already fills with the format
+/// 1.1 artifact manifest, so the bundle's manifest gets its own label. v1
+/// verifiers ignore it; Lab Coat's verify it when present.
+fn bundle_manifest_line(root: &Path, b: &BundleRef) -> String {
+    let mut line = format!("- Evidence bundle manifest: `{}`", b.manifest);
+    if !b.manifest_sha.is_empty() {
+        line.push_str(&format!(" sha256={}", b.manifest_sha));
+    }
+    line.push_str(&rel_token(root, &b.manifest));
+    line.push('\n');
+    line
 }
 
 pub(super) fn packet_path<S: State>(
@@ -261,7 +318,23 @@ fn render_handoff<S: State>(op: &Operation<S>) -> Result<String> {
         b.push_str(&line);
         b.push('\n');
     }
-    b.push_str("- Evidence bundle: none generated yet\n");
+    if let Some(bun) = bundle_ref(op, &st) {
+        let mut line = format!("- Evidence bundle: `{}`", bun.dir);
+        if !bun.at.is_empty() {
+            line.push_str(&format!(" generated={}", bun.at));
+        }
+        if !bun.files.is_empty() {
+            line.push_str(&format!(" files={}", bun.files));
+        }
+        if !bun.include_unredacted.is_empty() {
+            line.push_str(&format!(" include_unredacted={}", bun.include_unredacted));
+        }
+        b.push_str(&line);
+        b.push('\n');
+        b.push_str(&bundle_manifest_line(root, &bun));
+    } else {
+        b.push_str("- Evidence bundle: none generated yet\n");
+    }
     let ledger_path = ledger::file(&op.dir).display().to_string();
     b.push_str(&format!(
         "- Operation ledger: `{ledger_path}`{}\n",
@@ -381,9 +454,19 @@ fn render_closeout(op: &Operation<Closed>) -> Result<String> {
             rel_token(root, &report_path)
         ));
     }
-    b.push_str("- Evidence bundle: none generated yet\n");
+    let bun = bundle_ref(op, &st);
+    match &bun {
+        Some(x) => b.push_str(&format!(
+            "- Evidence bundle: `{}` slug={} generated={} files={} include_unredacted={}\n",
+            x.dir, x.slug, x.at, x.files, x.include_unredacted
+        )),
+        None => b.push_str("- Evidence bundle: none generated yet\n"),
+    }
     b.push_str(&manifest_line(op));
     b.push('\n');
+    if let Some(x) = &bun {
+        b.push_str(&bundle_manifest_line(root, x));
+    }
     if handoff_path.is_empty() {
         b.push_str("- Latest handoff: none generated yet\n");
     } else {
@@ -693,9 +776,23 @@ fn render_archive(op: &Operation<Closed>) -> Result<String> {
             rel_token(root, &report_path)
         ));
     }
-    b.push_str("- Evidence bundle: none generated yet\n");
+    let bun = bundle_ref(op, &st);
+    match &bun {
+        Some(x) => b.push_str(&format!(
+            "- Evidence bundle: `{}` generated={} slug={} files={} include_unredacted={}\n",
+            x.dir,
+            x.at,
+            or_value(&x.slug, "unknown"),
+            or_value(&x.files, "0"),
+            or_value(&x.include_unredacted, "0")
+        )),
+        None => b.push_str("- Evidence bundle: none generated yet\n"),
+    }
     b.push_str(&manifest_line(op));
     b.push('\n');
+    if let Some(x) = &bun {
+        b.push_str(&bundle_manifest_line(root, x));
+    }
     b.push_str(&backtick_sha_line(
         root,
         "Latest handoff",

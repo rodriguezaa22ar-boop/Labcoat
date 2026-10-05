@@ -1,7 +1,8 @@
-//! `evidence add|list|verify|diff`.
+//! `evidence add|list|verify|diff|bundle|bundle-verify`.
 
 use std::path::PathBuf;
 
+use lcoat_core::bundle;
 use lcoat_core::evidence::{self, AddParams};
 use lcoat_core::operation::Operation;
 use lcoat_format::canonical::compact;
@@ -15,13 +16,15 @@ use super::{
 /// Dispatch `evidence <verb>`.
 pub fn run(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
     let Some((verb, rest)) = args.split_first() else {
-        return Err(fail("evidence add|list|verify|diff"));
+        return Err(fail("evidence add|list|verify|diff|bundle|bundle-verify"));
     };
     match verb.as_str() {
         "add" => add(ctx, rest),
         "list" => list(ctx, rest),
         "verify" => verify(ctx, rest),
         "diff" => diff(ctx, rest),
+        "bundle" => bundle(ctx, rest),
+        "bundle-verify" => bundle_verify(ctx, rest),
         other => Err(fail(format!("unknown evidence command: {other}"))),
     }
 }
@@ -166,6 +169,202 @@ fn verify(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
     ctx.kv("Artifact Problems", &problems.to_string());
     ctx.kv("Verification Status", status);
     if problems > 0 {
+        Err(CliError::Exit(1))
+    } else {
+        Ok(())
+    }
+}
+
+/// `evidence bundle [bundle-name] [--include-unredacted]`: the shell's
+/// command and output, plus the manifest hash the ledger now records.
+fn bundle(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
+    const USAGE: &str = "evidence bundle [bundle-name] [--include-unredacted]";
+    let mut name = "";
+    let mut include_unredacted = false;
+    let mut positional = false;
+    for a in args {
+        match a.as_str() {
+            "--include-unredacted" => include_unredacted = true,
+            "--" => positional = true,
+            f if f.starts_with('-') && !positional => {
+                return Err(fail(format!(
+                    "unknown evidence bundle option: {f}\nusage: {USAGE}"
+                )));
+            }
+            n => {
+                if !name.is_empty() {
+                    return Err(fail(format!("unexpected evidence bundle argument: {n}")));
+                }
+                name = n;
+            }
+        }
+    }
+    let root = mutable_root()?;
+    let op = load_active(&root, "")?;
+    let b = bundle::write(&op, name, include_unredacted)?;
+    ctx.ok("evidence bundle written");
+    ctx.kv("bundle", &b.dir.display().to_string());
+    ctx.kv("manifest", &b.manifest.display().to_string());
+    ctx.kv("files", &b.files.to_string());
+    ctx.kv(
+        "include_unredacted",
+        if b.include_unredacted { "1" } else { "0" },
+    );
+    ctx.kv("manifest_sha256", &b.manifest_sha256);
+    super::next(ctx, &["evidence", "bundle-verify", &b.slug]);
+    super::next(ctx, &["op", "handoff", &op.slug]);
+    Ok(())
+}
+
+/// `evidence bundle-verify [--op operation] [bundle|dir] [--manifest-sha256 sha] [--json]`.
+///
+/// A bundle name (or nothing, for the latest) is verified inside its
+/// operation, anchored by the ledger. An argument with a `/` is a bundle
+/// directory, verified on its own with no lab root: what a recipient runs
+/// on a copy, with the hash from the packet they were given.
+fn bundle_verify(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
+    use lcoat_format::hash::Sha256Hex;
+
+    const USAGE: &str =
+        "evidence bundle-verify [--op operation] [bundle|dir] [--manifest-sha256 sha] [--json]";
+    let mut op_name = "";
+    let mut target = "";
+    let mut expected = "";
+    let mut json = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            "--op" | "--operation" => {
+                op_name = option(args, i, USAGE)?;
+                i += 2;
+            }
+            "--manifest-sha256" => {
+                expected = option(args, i, USAGE)?;
+                Sha256Hex::parse(expected).map_err(|_| {
+                    fail(format!(
+                        "--manifest-sha256 must be 64 lowercase hex characters, got: {expected}"
+                    ))
+                })?;
+                i += 2;
+            }
+            a if a.starts_with('-') => {
+                return Err(fail(format!("unknown option: {a}\nusage: {USAGE}")));
+            }
+            a => {
+                if !target.is_empty() {
+                    return Err(fail(format!("usage: {USAGE}")));
+                }
+                target = a;
+                i += 1;
+            }
+        }
+    }
+    let standalone = target.contains('/') || target == ".";
+    let (v, op_label) = if standalone {
+        if !op_name.is_empty() {
+            return Err(fail(
+                "a bundle directory is verified on its own; drop --op, or name the bundle instead of its path",
+            ));
+        }
+        let dir = std::path::Path::new(target);
+        if !dir.is_dir() {
+            return Err(fail(format!("not a directory: {target}")));
+        }
+        (bundle::verify_dir(dir, expected)?, String::new())
+    } else {
+        let root = root()?;
+        let op = Operation::load_named_or_active(&root, op_name)?;
+        let dir = bundle::resolve(&op, target)?;
+        (bundle::verify_in_op(&op, &dir, expected)?, op.name.clone())
+    };
+
+    if json {
+        let s = |v: &str| Value::String(v.to_owned());
+        let mut o = Object::new();
+        o.insert("schema_version", s("lcoat.evidence_bundle_verify.v1"));
+        o.insert("bundle", s(&v.dir));
+        o.insert("operation", s(&v.operation));
+        let mut m = Object::new();
+        m.insert("status", s(v.manifest_status));
+        m.insert("sha256", s(&v.manifest_sha256));
+        m.insert("expected_sha256", s(&v.expected_manifest_sha256));
+        m.insert("anchor", s(v.anchor));
+        m.insert(
+            "problems",
+            Value::Array(v.manifest_problems.iter().map(|p| s(p)).collect()),
+        );
+        o.insert("manifest", Value::Object(m));
+        o.insert(
+            "files",
+            Value::Array(
+                v.files
+                    .iter()
+                    .map(|f| {
+                        let mut x = Object::new();
+                        x.insert("id", s(&f.id));
+                        x.insert("path", s(&f.path));
+                        x.insert("status", s(f.status));
+                        x.insert("detail", s(&f.detail));
+                        Value::Object(x)
+                    })
+                    .collect(),
+            ),
+        );
+        o.insert("checked", Value::Number(v.checked().to_string()));
+        o.insert("problems", Value::Number(v.problems.to_string()));
+        o.insert("status", s(v.status));
+        let mut bytes = compact(&Value::Object(o));
+        bytes.push(b'\n');
+        ctx.raw(&bytes);
+    } else {
+        ctx.heading("Evidence Bundle Verification");
+        ctx.rule();
+        ctx.kv("Bundle", &v.dir);
+        if op_label.is_empty() {
+            ctx.kv("Operation ID", &v.operation);
+        } else {
+            ctx.kv("Operation", &op_label);
+        }
+        ctx.kv("Manifest SHA256", &v.manifest_sha256);
+        ctx.kv(
+            "Manifest Anchor",
+            &format!(
+                "{} anchor={} expected={}",
+                v.manifest_status,
+                v.anchor,
+                if v.expected_manifest_sha256.is_empty() {
+                    "none"
+                } else {
+                    &v.expected_manifest_sha256
+                }
+            ),
+        );
+        ctx.rule();
+        ctx.line(&format!("{:<26} {:<14} {}", "ARTIFACT", "STATUS", "DETAIL"));
+        for f in &v.files {
+            let detail = if f.detail.is_empty() {
+                f.path.clone()
+            } else {
+                format!("{} {}", f.path, f.detail)
+            };
+            ctx.line(format!("{:<26} {:<14} {detail}", f.id, f.status).trim_end());
+        }
+        ctx.rule();
+        for p in &v.manifest_problems {
+            ctx.line(&format!("problem: {p}"));
+        }
+        ctx.kv("Files Checked", &v.checked().to_string());
+        ctx.kv("Verification Problems", &v.problems.to_string());
+        ctx.kv("Verification Status", v.status);
+        if v.status == "unanchored" {
+            ctx.note("nothing anchors this manifest; pass --manifest-sha256 with the hash on the Evidence bundle manifest line of the handoff, closeout or archive packet");
+        }
+    }
+    if v.problems > 0 {
         Err(CliError::Exit(1))
     } else {
         Ok(())

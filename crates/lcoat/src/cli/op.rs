@@ -701,6 +701,13 @@ fn trust_chain(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
         ev.insert("checked", n(tc.evidence_checked));
         ev.insert("problems", n(tc.evidence_problems));
         ver.insert("evidence_artifacts", Value::Object(ev));
+        if tc.bundle_verification != "not-recorded" {
+            let mut bu = Object::new();
+            bu.insert("status", s(tc.bundle_verification));
+            bu.insert("path", s(&tc.bundle_path));
+            bu.insert("problems", n(tc.bundle_problems));
+            ver.insert("evidence_bundle", Value::Object(bu));
+        }
         o.insert("verification", Value::Object(ver));
         let mut l = Object::new();
         l.insert("file", s(&ledger_file.display().to_string()));
@@ -721,7 +728,8 @@ fn trust_chain(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
     // Layout follows the shell build's atlas_trust_chain_print. Two
     // documented differences: the v1 toolchain is not evaluated here, and
     // the Business Flow Evidence block is omitted (Lab Coat has no flows);
-    // two additions: the Evidence Artifacts and Ledger Chain lines.
+    // additions: the Evidence Artifacts and Ledger Chain lines, and the
+    // Evidence Bundle Files line when a bundle is recorded.
     ctx.heading("Operation Trust Chain");
     ctx.rule();
     ctx.kv("Operation", &op.name);
@@ -815,6 +823,15 @@ fn trust_chain(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
             tc.evidence_verification, tc.evidence_checked, tc.evidence_problems
         ),
     );
+    if tc.bundle_verification != "not-recorded" {
+        ctx.kv(
+            "Evidence Bundle Files",
+            &format!(
+                "{} bundle={} problems={}",
+                tc.bundle_verification, tc.bundle_path, tc.bundle_problems
+            ),
+        );
+    }
     ctx.rule();
     ctx.heading("Ledger");
     ctx.kv(

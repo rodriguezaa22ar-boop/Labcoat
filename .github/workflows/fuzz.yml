@@ -42,6 +42,7 @@ jobs:
           - slug
           - packet_text
           - receipt
+          - bundle_manifest
           - op_files
     steps:
       - uses: actions/checkout@v4

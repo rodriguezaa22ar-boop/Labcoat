@@ -962,3 +962,228 @@ fn next_lines_run_as_printed() {
     assert!(String::from_utf8_lossy(&r.stdout).contains("nothing above Tier 0 will contact"));
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// `evidence bundle`: the shell's eligibility rule, the copy, the ledger
+/// anchor, the packets that name it, and a copy re-verified with no root.
+#[test]
+fn evidence_bundle_round_trip() {
+    let root = fresh("bundle");
+    let recon = root.join("recon.txt");
+    let notes = root.join("notes.txt");
+    std::fs::write(&recon, "PORT 22 open ssh\n").unwrap();
+    std::fs::write(&notes, "internal notes\n").unwrap();
+    ok(&lcoat(
+        &root,
+        &[
+            "target",
+            "add",
+            "node",
+            "10.10.10.5",
+            "--scope-status",
+            "in-scope",
+        ],
+    ));
+    ok(&lcoat(&root, &["op", "start", "demo", "node"]));
+    assert!(err(&lcoat(&root, &["evidence", "bundle"])).contains("no evidence recorded yet"));
+    ok(&lcoat(
+        &root,
+        &[
+            "evidence",
+            "add",
+            recon.to_str().unwrap(),
+            "--classification",
+            "public",
+        ],
+    ));
+    ok(&lcoat(&root, &["evidence", "add", notes.to_str().unwrap()]));
+
+    // One internal, unredacted record refuses the whole bundle without the flag.
+    let e = err(&lcoat(&root, &["evidence", "bundle"]));
+    assert!(
+        e.contains("1 non-public evidence record(s) are unredacted"),
+        "{e}"
+    );
+    assert!(!root.join("sessions/demo/evidence-bundles").exists());
+
+    let out = ok(&lcoat(
+        &root,
+        &["evidence", "bundle", "Hand Off", "--include-unredacted"],
+    ));
+    assert_eq!(kv(&out, "files"), "2");
+    assert_eq!(kv(&out, "include_unredacted"), "1");
+    let sha = kv(&out, "manifest_sha256");
+    let dir = root.join("sessions/demo/evidence-bundles/hand-off");
+    assert!(
+        dir.join("files/ev_20261002T074000Z-public-recon.txt")
+            .is_file()
+    );
+    assert!(
+        dir.join("files/ev_20261002T074000Z_02-unredacted-notes.txt")
+            .is_file()
+    );
+    let ledger = std::fs::read_to_string(root.join("sessions/demo/ledger.ndjson")).unwrap();
+    assert!(ledger.contains(&format!(
+        "bundle=hand-off files=2 include_unredacted=1 manifest_sha256={sha}"
+    )));
+    // No staging directory is left beside it.
+    let names: Vec<String> = std::fs::read_dir(root.join("sessions/demo/evidence-bundles"))
+        .unwrap()
+        .map(|d| d.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, ["hand-off"]);
+    assert!(
+        err(&lcoat(
+            &root,
+            &["evidence", "bundle", "hand-off", "--include-unredacted"]
+        ))
+        .contains("evidence bundle already exists: hand-off")
+    );
+    assert!(
+        err(&lcoat(&root, &["evidence", "bundle", "--bogus"]))
+            .contains("unknown evidence bundle option")
+    );
+
+    // Verified in place against the ledger; readiness and the handoff name it.
+    let v = ok(&lcoat(&root, &["evidence", "bundle-verify"]));
+    assert!(v.contains("Manifest Anchor: verified anchor=ledger"), "{v}");
+    assert!(v.contains("Verification Status: verified"), "{v}");
+    let j = ok(&lcoat(
+        &root,
+        &["evidence", "bundle-verify", "hand-off", "--json"],
+    ));
+    assert!(
+        j.starts_with("{\"schema_version\":\"lcoat.evidence_bundle_verify.v1\""),
+        "{j}"
+    );
+    assert!(j.contains("\"status\":\"verified\""), "{j}");
+    assert!(ok(&lcoat(&root, &["op", "readiness"])).contains("Bundle Freshness: current"));
+    ok(&lcoat(&root, &["op", "report"]));
+    ok(&lcoat(&root, &["op", "handoff"]));
+    let handoff =
+        std::fs::read_to_string(root.join("sessions/demo/handoff/demo-handoff.md")).unwrap();
+    assert!(handoff.contains("- Evidence bundle: `"), "{handoff}");
+    assert!(
+        handoff.contains(&format!("manifest.ndjson` sha256={sha}")),
+        "{handoff}"
+    );
+
+    // A bundle after close would be an event the closeout does not allow.
+    ok(&lcoat(&root, &["op", "close", "--force"]));
+    assert!(
+        !err(&lcoat(
+            &root,
+            &["evidence", "bundle", "late", "--include-unredacted"]
+        ))
+        .is_empty()
+    );
+    ok(&lcoat(&root, &["op", "closeout", "demo"]));
+    let v = ok(&lcoat(&root, &["op", "verify", "demo"]));
+    assert!(v.contains("Bundle Manifest      verified"), "{v}");
+    ok(&lcoat(&root, &["op", "audit-packet", "demo"]));
+    ok(&lcoat(&root, &["op", "archive-packet", "demo"]));
+    assert!(ok(&lcoat(&root, &["op", "archive-verify", "demo"])).contains("Bundle Manifest"));
+    let tc = ok(&lcoat(&root, &["op", "trust-chain", "demo", "--strict"]));
+    assert!(tc.contains("Evidence Bundle Files: verified"), "{tc}");
+
+    // A copy, verified elsewhere with no lab root and the packet's hash.
+    let copy = fresh("bundle-copy");
+    for f in ["manifest.ndjson", "README.md"] {
+        std::fs::copy(dir.join(f), copy.join(f)).unwrap();
+    }
+    std::fs::create_dir_all(copy.join("files")).unwrap();
+    for e in std::fs::read_dir(dir.join("files")).unwrap() {
+        let e = e.unwrap();
+        std::fs::copy(e.path(), copy.join("files").join(e.file_name())).unwrap();
+    }
+    let standalone = |extra: &[&str]| {
+        let mut args = vec!["evidence", "bundle-verify", copy.to_str().unwrap()];
+        args.extend_from_slice(extra);
+        Command::new(env!("CARGO_BIN_EXE_lcoat"))
+            .args(&args)
+            .env_remove("LCOAT_ROOT")
+            .env_remove("LAB_ROOT")
+            .output()
+            .unwrap()
+    };
+    assert!(
+        ok(&standalone(&["--manifest-sha256", &sha])).contains("Verification Status: verified")
+    );
+    assert!(ok(&standalone(&[])).contains("Verification Status: unanchored"));
+    assert!(err(&standalone(&["--manifest-sha256", "abc"])).contains("64 lowercase hex"));
+    std::fs::write(
+        copy.join("files/ev_20261002T074000Z-public-recon.txt"),
+        "edited\n",
+    )
+    .unwrap();
+    let out = standalone(&["--manifest-sha256", &sha]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("changed"));
+    let _ = std::fs::remove_dir_all(&copy);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Crash injection for `evidence bundle`: interrupted while staging, the
+/// final name never appears and a retry succeeds; interrupted after the
+/// rename, the bundle exists without its ledger event, and bundle-verify
+/// says so.
+#[test]
+fn evidence_bundle_crash_points() {
+    let root = fresh("bundle-crash");
+    let recon = root.join("recon.txt");
+    std::fs::write(&recon, "PORT 22 open ssh\n").unwrap();
+    ok(&lcoat(
+        &root,
+        &[
+            "target",
+            "add",
+            "node",
+            "10.10.10.5",
+            "--scope-status",
+            "in-scope",
+        ],
+    ));
+    ok(&lcoat(&root, &["op", "start", "demo", "node"]));
+    ok(&lcoat(
+        &root,
+        &[
+            "evidence",
+            "add",
+            recon.to_str().unwrap(),
+            "--classification",
+            "public",
+        ],
+    ));
+    let out = crash_at(&root, "bundle.staged", &["evidence", "bundle"]);
+    if out.status.code() != Some(99) {
+        assert!(
+            cfg!(not(feature = "test-support")) && out.status.success(),
+            "expected an injected crash (exit 99), got {:?}\n{}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        eprintln!("crash injection skipped: run with --features lcoat/test-support");
+        let _ = std::fs::remove_dir_all(&root);
+        return;
+    }
+    let bundles = root.join("sessions/demo/evidence-bundles");
+    assert!(!bundles.join("demo-evidence-bundle").exists());
+    let ledger = std::fs::read_to_string(root.join("sessions/demo/ledger.ndjson")).unwrap();
+    assert!(!ledger.contains("evidence.bundle.generated"));
+    // The orphaned staging directory is hidden and does not block a retry.
+    ok(&lcoat(&root, &["evidence", "bundle"]));
+    ok(&lcoat(&root, &["evidence", "bundle-verify"]));
+
+    let out = crash_at(&root, "bundle.renamed", &["evidence", "bundle", "second"]);
+    assert_eq!(out.status.code(), Some(99));
+    assert!(bundles.join("second/manifest.ndjson").is_file());
+    let out = lcoat(&root, &["evidence", "bundle-verify", "second"]);
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("no evidence.bundle.generated event records this bundle"),
+        "{text}"
+    );
+    // The latest recorded bundle is still the first one.
+    assert!(ok(&lcoat(&root, &["evidence", "bundle-verify"])).contains("demo-evidence-bundle"));
+    let _ = std::fs::remove_dir_all(&root);
+}

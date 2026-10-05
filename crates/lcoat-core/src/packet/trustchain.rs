@@ -4,6 +4,7 @@
 
 use std::path::Path;
 
+use crate::bundle;
 use crate::error::Result;
 use crate::evidence;
 use crate::operation::{Operation, State as OpState};
@@ -35,6 +36,13 @@ pub struct TrustChain {
     pub evidence_verification: &'static str,
     pub evidence_checked: usize,
     pub evidence_problems: usize,
+    /// Format 1.1: the latest recorded evidence bundle, re-verified.
+    /// `not-recorded` when there is none; otherwise the status of
+    /// [`crate::bundle::verify_in_op`], or `missing` when its directory is gone.
+    pub bundle_verification: &'static str,
+    /// The bundle directory, `-` when none is recorded.
+    pub bundle_path: String,
+    pub bundle_problems: usize,
 }
 
 /// The next step when the chain is current.
@@ -202,10 +210,18 @@ pub fn collect_trust_chain<S: OpState>(op: &Operation<S>) -> Result<TrustChain> 
         "verified"
     };
 
+    let (bundle_verification, bundle_path, bundle_problems) = bundle_status(op, &st)?;
+
     let (status, next_step) = if evidence_problems > 0 {
         (
             "attention-required",
             "Evidence artifacts changed or missing since capture; run 'lcoat evidence verify' and investigate before trusting this operation."
+                .to_owned(),
+        )
+    } else if bundle_problems > 0 {
+        (
+            "attention-required",
+            "Evidence bundle changed or incomplete since it was written; run 'lcoat evidence bundle-verify' and investigate before sharing it."
                 .to_owned(),
         )
     } else if archive != "current" {
@@ -244,6 +260,31 @@ pub fn collect_trust_chain<S: OpState>(op: &Operation<S>) -> Result<TrustChain> 
         evidence_verification,
         evidence_checked: checks.len(),
         evidence_problems,
+        bundle_verification,
+        bundle_path,
+        bundle_problems,
+    })
+}
+
+/// Re-verify the latest recorded bundle: status, directory, problems.
+fn bundle_status<S: OpState>(
+    op: &Operation<S>,
+    st: &State,
+) -> Result<(&'static str, String, usize)> {
+    if !st.bundle.present() {
+        return Ok(("not-recorded", "-".into(), 0));
+    }
+    let r = bundle::Recorded::parse(&st.bundle.at, &st.bundle.detail);
+    let Some(dir) = r.dir(&op.dir) else {
+        return Ok(("attention-required", "-".into(), 1));
+    };
+    let path = dir.display().to_string();
+    if !dir.is_dir() {
+        return Ok(("missing", path, 1));
+    }
+    Ok(match bundle::verify_in_op(op, &dir, "") {
+        Ok(v) => (v.status, path, v.problems),
+        Err(_) => ("attention-required", path, 1),
     })
 }
 

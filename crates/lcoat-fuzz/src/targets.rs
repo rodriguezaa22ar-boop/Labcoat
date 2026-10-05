@@ -13,6 +13,7 @@ use std::sync::OnceLock;
 use lcoat_adapters::Adapter;
 use lcoat_adapters::nmap::{Nmap, NmapArg, open_ports};
 use lcoat_adapters::script::ScriptArgs;
+use lcoat_core::bundle;
 use lcoat_core::chain::{self, ChainStatus};
 use lcoat_core::metadata::{self, MetadataOnly};
 use lcoat_core::packet;
@@ -292,6 +293,50 @@ pub fn ledger_chain(data: &[u8]) -> u64 {
         "tampering event {i} was not reported at {i}"
     );
     linked.len() as u64
+}
+
+/// Evidence bundle manifests arrive with a bundle from someone else:
+/// [`bundle::verify_dir`] on a bundle whose manifest is the input, anchored
+/// by the input's own hash. A `verified` verdict must mean every listed file
+/// matched and every listed path is `files/<name>`, so no manifest can make
+/// the verifier vouch for (or read) a path outside the bundle.
+pub fn bundle_manifest(data: &[u8]) -> u64 {
+    let dir = scratch_base().join("bundle");
+    let _ = std::fs::remove_dir_all(&dir);
+    if std::fs::create_dir_all(dir.join(bundle::FILES)).is_err() {
+        return 0;
+    }
+    let _ = std::fs::write(dir.join("files/ev_1-public-a.txt"), b"hello\n");
+    if std::fs::write(dir.join(bundle::MANIFEST), data).is_err() {
+        return 0;
+    }
+    let sha = lcoat_format::hash::Sha256Hex::of_bytes(data);
+    let r = bundle::verify_dir(&dir, sha.as_str());
+    if let Ok(v) = &r {
+        assert_eq!(v.manifest_sha256, sha.as_str());
+        assert_eq!(v.problems == 0, v.status != "attention-required");
+        if v.status == "verified" {
+            let objs =
+                ndjson::parse_lines(&text(data), "fuzz").expect("a verified manifest parses");
+            assert!(!objs.is_empty());
+            for o in &objs {
+                let p = o.str("bundle_path");
+                assert!(
+                    bundle::is_bundle_path(p) && bundle::is_contained(p),
+                    "{p:?} verified"
+                );
+            }
+            assert!(v.files.iter().all(|f| f.status == "verified"));
+        }
+    }
+    shape_of(&r, |v| {
+        let mut key = format!("{} {}", v.status, v.manifest_status);
+        for f in v.files.iter().take(8) {
+            key.push(' ');
+            key.push_str(f.status);
+        }
+        fnv(key.as_bytes()) & 0xffff
+    })
 }
 
 // --- env files ---------------------------------------------------------------
@@ -984,6 +1029,35 @@ pub static TARGETS: &[Target] = &[
             b"\"",
         ],
         cost: 1,
+    },
+    Target {
+        name: "bundle_manifest",
+        about: "evidence bundle manifests received with a bundle",
+        run: bundle_manifest,
+        seeds: || {
+            let h = "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03";
+            s(&[
+                &format!(
+                    "{{\"id\":\"ev_1\",\"operation\":\"demo\",\"included_as\":\"public\",\"source_sha256\":\"{h}\",\"bundle_path\":\"files/ev_1-public-a.txt\",\"bundled_sha256\":\"{h}\"}}\n"
+                ),
+                "{\"id\":\"ev_1\",\"bundle_path\":\"files/../manifest.ndjson\",\"bundled_sha256\":\"x\"}\n",
+                "{\"id\":\"ev_1\",\"bundle_path\":\"/etc/hostname\"}\n",
+            ])
+        },
+        dict: &[
+            b"\"bundle_path\":\"",
+            b"files/",
+            b"../",
+            b"/",
+            b"\"bundled_sha256\":\"",
+            b"\"source_sha256\":\"",
+            b"\"id\":\"",
+            b"\n",
+            b"{",
+            b"}",
+            b"\"",
+        ],
+        cost: 2,
     },
     Target {
         name: "op_files",
