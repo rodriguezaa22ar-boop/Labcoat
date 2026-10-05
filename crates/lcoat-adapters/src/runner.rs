@@ -209,6 +209,11 @@ pub fn run(op: &Operation<Active>, p: &RunParams) -> Result<Outcome> {
     let adapter: Box<dyn Adapter> = adapter;
     let name = adapter.name();
     let tier = adapter.classify(&p.args)?;
+    // One lock for the whole run, refusal included: preflight, start,
+    // execution, capture and finish are one transaction in the ledger, and
+    // `op close` cannot slip in between them (review 2026-10-05). Other
+    // mutating commands in this operation wait, and say they are waiting.
+    let lock = op.lock()?;
     let target = if p.target.is_empty() {
         op.target.clone()
     } else {
@@ -252,20 +257,47 @@ pub fn run(op: &Operation<Active>, p: &RunParams) -> Result<Outcome> {
         ))?,
     )?;
 
-    let timeout = p.timeout.unwrap_or_else(|| adapter.default_timeout());
-    let captured = execute(&argv, timeout)?;
+    // From here on every failure still closes the run in the ledger, so an
+    // `adapter.started` is never left without its `adapter.finished`.
+    let finish_failed = |exit: i32, reason: &str| -> Result<()> {
+        op.append_event(
+            "adapter.finished",
+            tier,
+            name,
+            "error",
+            &meta(format!(
+                "adapter={name} exit={exit} evidence=none reason={reason}"
+            ))?,
+        )
+    };
 
-    // Capture whatever came back, inside the operation's tmp/ (never /tmp).
-    let tmp = op.dir.join("tmp");
-    mkdir_private(&tmp)?;
+    let timeout = p.timeout.unwrap_or_else(|| adapter.default_timeout());
+    let captured = match execute(&argv, timeout) {
+        Ok(c) => c,
+        Err(e) => {
+            finish_failed(-1, "spawn-failed")?;
+            return Err(e);
+        }
+    };
+
+    // Capture whatever came back, inside the operation's tmp/ (never /tmp),
+    // in a directory no other run shares; the file name is what the
+    // evidence record keeps, so it stays `<adapter>-output.txt`.
+    let tmp = op
+        .dir
+        .join("tmp")
+        .join(format!("run-{}", std::process::id()));
     let capture = tmp.join(format!("{name}-output.txt"));
     let mut body = captured.stdout.clone();
     if !captured.stderr.is_empty() {
         body.extend_from_slice(b"\n--- stderr ---\n");
         body.extend_from_slice(&captured.stderr);
     }
-    write_private(&capture, &body)?;
-    let added = evidence::add(
+    if let Err(e) = mkdir_private(&tmp).and_then(|()| write_private(&capture, &body)) {
+        finish_failed(captured.exit_code, "capture-failed")?;
+        return Err(e.into());
+    }
+    let added = evidence::add_locked(
         op,
         &AddParams {
             source: capture.clone(),
@@ -276,21 +308,14 @@ pub fn run(op: &Operation<Active>, p: &RunParams) -> Result<Outcome> {
             tool: name.to_owned(),
             vantage: Some((meta(host.clone())?, meta(addr.clone())?)),
         },
+        &lock,
     );
     let _ = std::fs::remove_file(&capture);
+    let _ = std::fs::remove_dir(&tmp);
     let rec = match added {
         Ok(r) => r,
         Err(e) => {
-            op.append_event(
-                "adapter.finished",
-                tier,
-                name,
-                "error",
-                &meta(format!(
-                    "adapter={name} exit={} evidence=none reason=capture-failed",
-                    captured.exit_code
-                ))?,
-            )?;
+            finish_failed(captured.exit_code, "capture-failed")?;
             return Err(e);
         }
     };
