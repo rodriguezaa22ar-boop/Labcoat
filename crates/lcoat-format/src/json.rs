@@ -16,7 +16,12 @@
 //! surrogates). Tool output never reaches it; only files Lab Coat or its
 //! siblings wrote do.
 
+use std::collections::HashMap;
 use std::fmt;
+
+/// Object size at which the parser switches from a linear duplicate-key
+/// scan to a hash index.
+const INDEX_AT: usize = 32;
 
 /// A parsed JSON value.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -214,11 +219,15 @@ impl Parser<'_> {
 
     fn object(&mut self, depth: usize) -> Result<Value, ParseError> {
         self.i += 1; // {
-        let mut obj = Object::new();
+        let mut entries: Vec<(String, Value)> = Vec::new();
+        // Duplicate-key lookup: a linear scan while the object is small (the
+        // common case, no allocation), a hash index once it is not. Review
+        // 2026-10-05: the scan alone made a 60k-key line take 17 s.
+        let mut index: Option<HashMap<String, usize>> = None;
         self.ws();
         if self.peek() == Some(b'}') {
             self.i += 1;
-            return Ok(Value::Object(obj));
+            return Ok(Value::Object(Object(entries)));
         }
         loop {
             self.ws();
@@ -233,13 +242,36 @@ impl Parser<'_> {
             self.i += 1;
             self.ws();
             let v = self.value(depth + 1)?;
-            obj.insert(key, v);
+            let seen = if entries.len() < INDEX_AT {
+                entries.iter().position(|(k, _)| *k == key)
+            } else {
+                index
+                    .get_or_insert_with(|| {
+                        entries
+                            .iter()
+                            .enumerate()
+                            .map(|(i, (k, _))| (k.clone(), i))
+                            .collect()
+                    })
+                    .get(&key)
+                    .copied()
+            };
+            match seen {
+                // A repeated key keeps its first position, last value wins.
+                Some(i) => entries[i].1 = v,
+                None => {
+                    if let Some(index) = index.as_mut() {
+                        index.insert(key.clone(), entries.len());
+                    }
+                    entries.push((key, v));
+                }
+            }
             self.ws();
             match self.peek() {
                 Some(b',') => self.i += 1,
                 Some(b'}') => {
                     self.i += 1;
-                    return Ok(Value::Object(obj));
+                    return Ok(Value::Object(Object(entries)));
                 }
                 _ => return Err(self.err("expected ',' or '}'")),
             }
@@ -398,6 +430,43 @@ mod tests {
         let keys: Vec<&str> = o.iter().map(|(k, _)| k).collect();
         assert_eq!(keys, ["b", "a"]);
         assert_eq!(o.get("b"), Some(&Value::Number("3".into())));
+    }
+
+    #[test]
+    fn large_objects_parse_in_linear_time_with_duplicates_resolved() {
+        // Past INDEX_AT the hash index takes over; the jq rule must hold on
+        // both sides of the switch.
+        let n = 200_000;
+        let mut text = String::from("{");
+        for i in 0..n {
+            text.push_str(&format!("\"k{i}\":{i},"));
+        }
+        text.push_str("\"k5\":\"small\",\"k100\":\"big\"}");
+        let started = std::time::Instant::now();
+        let v = p(&text);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
+        let o = v.as_object().unwrap();
+        assert_eq!(o.len(), n);
+        assert_eq!(o.get("k5"), Some(&Value::String("small".into())));
+        assert_eq!(o.get("k100"), Some(&Value::String("big".into())));
+        let keys: Vec<&str> = o.iter().take(6).map(|(k, _)| k).collect();
+        assert_eq!(keys, ["k0", "k1", "k2", "k3", "k4", "k5"]);
+        let mut many = String::from("{");
+        for i in 0..40 {
+            many.push_str(&format!("\"k{i}\":{i},"));
+        }
+        many.push_str("\"k39\":0,\"k0\":1}");
+        let o = p(&many);
+        let o = o.as_object().unwrap();
+        assert_eq!(
+            (o.len(), o.iter().last().map(|(k, _)| k)),
+            (40, Some("k39"))
+        );
+        assert_eq!(o.get("k0"), Some(&Value::Number("1".into())));
     }
 
     #[test]

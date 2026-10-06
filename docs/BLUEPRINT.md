@@ -235,7 +235,7 @@ Thirteen targets, each a function in `crates/lcoat-fuzz/src/targets.rs` that fee
 | `nmap_xml` | `nmap -oX` from the network | ports are plain decimals in 1..=65535, protocol is one nmap writes, banners carry no control or bidi characters and are at most 128 characters, one bad byte cannot hide the other findings |
 | `nmap_args` | operator arguments | the argv passed to nmap re-parses to the same arguments; no file, spoofing or target flag survives; tier stays 1..=2 |
 | `script_args` | operator arguments | declared tier stays 1..=3; no empty command |
-| `json` | receipts, indexes | canonical, compact and pretty forms re-parse; canonical bytes are a fixed point and newline-free |
+| `json` | receipts, indexes | canonical, compact and pretty forms re-parse; canonical bytes are a fixed point and newline-free; parsing is linear in the number of keys (review 2026-10-05: the duplicate-key check was a scan per key, so a 60k-key line took seconds; objects past 32 keys now use a hash index, same first-position, last-value rule) |
 | `ndjson`, `ledger_chain` | indexes, ledgers | freshly linked events verify; tampering event *i* is reported at *i* |
 | `envfile` | operation, scope, target, profile records | records round-trip; any string quoted as one value reads back as that value and never as a second key |
 | `metadata_scan` | free text | scanner verdicts are consistent and stable |
