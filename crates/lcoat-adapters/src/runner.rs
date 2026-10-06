@@ -109,6 +109,41 @@ pub fn look_path(name: &str) -> Result<PathBuf> {
     fail!("tool {name:?} not found in {SCRUBBED_PATH}; install it or pass an absolute path")
 }
 
+/// Where `name` would be found outside [`SCRUBBED_PATH`]: on the caller's
+/// `PATH`, or in Homebrew's prefixes. For `lcoat doctor`, to say "installed,
+/// but where Lab Coat does not look" instead of "not installed".
+pub fn look_path_elsewhere(name: &str) -> Option<PathBuf> {
+    let caller = std::env::var("PATH").unwrap_or_default();
+    caller
+        .split(':')
+        .chain(["/opt/homebrew/bin", "/opt/homebrew/sbin"])
+        .filter(|d| !d.is_empty() && !SCRUBBED_PATH.split(':').any(|s| s == *d))
+        .map(|d| Path::new(d).join(name))
+        .find(|p| is_executable(p))
+}
+
+/// The first line of `<tool> --version`, run like an adapter run (argv
+/// only, scrubbed environment, stdin closed) with a short timeout. Asks the
+/// tool about itself and contacts nothing. Control characters are replaced
+/// so a strange binary cannot write escapes to the terminal.
+pub fn tool_version(path: &Path) -> Option<String> {
+    let argv = [path.display().to_string(), "--version".to_owned()];
+    let out = execute(&argv, Duration::from_secs(5)).ok()?;
+    if out.timed_out {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line: String = text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())?
+        .chars()
+        .map(|c| if c.is_control() { '?' } else { c })
+        .take(120)
+        .collect();
+    Some(line)
+}
+
 struct Captured {
     stdout: Vec<u8>,
     stderr: Vec<u8>,
