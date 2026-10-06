@@ -117,8 +117,11 @@ printf 'tampered\n' >>"$root/$ARTIFACT"
 new="$(sha256sum "$root/$ARTIFACT" | cut -d' ' -f1)"
 old="$(grep -o '"sha256":"[0-9a-f]*"' "$root/sessions/demo/evidence/manifest.ndjson" | head -1 | cut -d'"' -f4)"
 sed -i "s/$old/$new/" "$root/sessions/demo/evidence/manifest.ndjson" "$root/sessions/demo/evidence.ndjson"
-"$BIN" evidence verify demo 2>&1 | expect "evidence verify now agrees with the forged index" "Verification Status: verified"
-# ...but the manifest's hash is anchored in the closeout and archive packets.
+# Index and manifest now agree with the edit, but the ledger's artifact.created
+# event still carries the hash recorded at capture.
+"$BIN" evidence verify demo 2>&1 | expect "evidence verify cross-checks the ledger" "the ledger recorded sha256="
+expect_exit "evidence verify" 1 "$BIN" evidence verify demo
+# ...and the manifest's hash is anchored in the closeout and archive packets.
 "$BIN" op verify demo 2>&1 | expect "op verify catches the manifest" "Evidence Manifest    changed"
 expect_exit "op verify" 1 "$BIN" op verify demo
 "$BIN" op archive-verify demo 2>&1 | expect "archive-verify catches the manifest" "Evidence Manifest"
@@ -132,6 +135,13 @@ rm "$root/$ARTIFACT"
 "$BIN" evidence verify demo 2>&1 | expect "evidence verify" "ev_20261002T074000Z        missing"
 expect_exit "evidence verify" 1 "$BIN" evidence verify demo
 shell_says_verified "$root" "delete_artifact"
+
+echo "case 3b: empty the evidence index"
+root="$(fresh_root empty_index)"; export LCOAT_ROOT="$root"
+: >"$root/sessions/demo/evidence.ndjson"
+"$BIN" evidence verify demo 2>&1 | expect "evidence verify" "ev_20261002T074000Z        unindexed"
+expect_exit "evidence verify" 1 "$BIN" evidence verify demo
+"$BIN" op trust-chain demo 2>&1 | expect "trust-chain line" "Evidence Artifacts: attention-required"
 
 echo "case 4: rewrite a ledger event in an operation that has no packets yet"
 root="$(fresh_root rewrite_event)"; export LCOAT_ROOT="$root"
