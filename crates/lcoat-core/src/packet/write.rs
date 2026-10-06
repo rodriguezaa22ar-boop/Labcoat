@@ -309,6 +309,7 @@ fn render_handoff<S: State>(op: &Operation<S>) -> Result<String> {
 /// and write, so the manifest's ledger anchor includes its own event.
 pub fn closeout(op: &Operation<Closed>, manifest_name: &str) -> Result<Written> {
     let _lock = op.lock()?;
+    super::require_sound_ledger(op, "closeout manifest")?;
     let path = packet_path(
         op,
         "closeout",
@@ -451,6 +452,7 @@ pub fn audit(op: &Operation<Closed>, _closeout: &Written, packet_name: &str) -> 
             ledger_file.display()
         );
     }
+    super::require_sound_ledger(op, "audit packet")?;
     let path = packet_path(op, "audit", packet_name, "audit", "audit packet")?;
     op.append_ledger(
         "audit.packet.generated",
@@ -607,6 +609,7 @@ fn render_audit(op: &Operation<Closed>) -> Result<String> {
 /// `archive.packet.generated`, then renders and writes.
 pub fn archive(op: &Operation<Closed>, _audit: &Written, packet_name: &str) -> Result<Written> {
     let _lock = op.lock()?;
+    super::require_sound_ledger(op, "archive packet")?;
     let path = packet_path(op, "archive", packet_name, "archive", "archive packet")?;
     op.append_ledger(
         "archive.packet.generated",
