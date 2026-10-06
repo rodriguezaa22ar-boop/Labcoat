@@ -339,6 +339,10 @@ pub fn metadata_scan(data: &[u8]) -> u64 {
             !metadata::value_is_forbidden(&s),
             "scan and value_is_forbidden disagree"
         );
+        assert!(
+            !metadata::carries_credential(&s),
+            "scan and carries_credential disagree"
+        );
         // Accepted text stays accepted (no state, no order dependence).
         assert!(MetadataOnly::scan(m.as_str()).is_ok());
     }

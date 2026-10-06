@@ -12,6 +12,14 @@
 //! (via the Go build's `receipt.go`), reproduced here with plain
 //! case-insensitive matching so the three implementations reject the same
 //! content. The original regular expressions are quoted beside each list.
+//!
+//! Writes go further. [`MetadataOnly::scan`] also refuses credential shapes
+//! the shell patterns miss ([`carries_credential`]: `password:`, URL
+//! userinfo, cloud and forge tokens, JWTs, every PEM private key). Being
+//! stricter than the shell on write keeps parity, since anything Rust
+//! writes still passes the shell and Lite verifiers; the verify paths
+//! ([`forbidden_paths`], [`value_is_forbidden`]) stay exactly the shell's so
+//! a record the other builds accept is not rejected here.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -106,7 +114,7 @@ pub struct MetadataOnly(String);
 impl MetadataOnly {
     /// Scan `raw` and wrap it if it carries no forbidden content.
     pub fn scan(raw: &str) -> Result<Self, Forbidden> {
-        if value_is_forbidden(raw) {
+        if value_is_forbidden(raw) || carries_credential(raw) {
             return Err(Forbidden::Value);
         }
         Ok(Self(raw.to_owned()))
@@ -204,6 +212,106 @@ pub fn value_is_forbidden(value: &str) -> bool {
     })
 }
 
+/// Credential shapes the shell patterns miss, refused on every write (see
+/// the module docs for why verification does not use them):
+///
+/// - `password:` / `passwd:` (the shell catches only `=`);
+/// - a URL with a password in it, `scheme://user:pass@host`;
+/// - AWS access key ids (`AKIA`/`ASIA` + 16 upper-case letters or digits);
+/// - JSON Web Tokens (`eyJ….eyJ….`);
+/// - GitHub fine-grained (`github_pat_`), GitLab (`glpat-`) and Slack
+///   (`xoxb-`, `xoxp-`, ...) tokens;
+/// - any PEM private key header (`BEGIN ENCRYPTED PRIVATE KEY`, `BEGIN DSA
+///   PRIVATE KEY`, `BEGIN PGP PRIVATE KEY BLOCK`, ...).
+pub fn carries_credential(value: &str) -> bool {
+    let v = value.to_ascii_lowercase();
+    v.contains("password:")
+        || v.contains("passwd:")
+        || url_with_password(&v)
+        || token_after(&v, "github_pat_", 20, |c| {
+            c.is_ascii_alphanumeric() || c == b'_'
+        })
+        || token_after(&v, "glpat-", 20, |c| {
+            c.is_ascii_alphanumeric() || c == b'_' || c == b'-'
+        })
+        || ["xoxa-", "xoxb-", "xoxp-", "xoxr-", "xoxs-"]
+            .iter()
+            .any(|p| token_after(&v, p, 10, |c| c.is_ascii_alphanumeric() || c == b'-'))
+        || pem_private_key(value)
+        || aws_key_id(value.as_bytes())
+        || jwt(value.as_bytes())
+}
+
+/// Whether `prefix` occurs, not glued to a preceding letter or digit, and is
+/// followed by at least `min` bytes accepted by `body`.
+fn token_after(v: &str, prefix: &str, min: usize, body: impl Fn(u8) -> bool) -> bool {
+    let b = v.as_bytes();
+    v.match_indices(prefix).any(|(i, _)| {
+        (i == 0 || !b[i - 1].is_ascii_alphanumeric())
+            && b[i + prefix.len()..]
+                .iter()
+                .take_while(|c| body(**c))
+                .count()
+                >= min
+    })
+}
+
+/// `scheme://user:password@host`: a `:` and then an `@` inside the
+/// authority (before the first `/`, `?`, `#` or whitespace).
+fn url_with_password(v: &str) -> bool {
+    v.match_indices("://").any(|(i, _)| {
+        let rest = &v[i + 3..];
+        let end = rest
+            .find(|c: char| matches!(c, '/' | '?' | '#') || c.is_whitespace())
+            .unwrap_or(rest.len());
+        let authority = &rest[..end];
+        authority
+            .rfind('@')
+            .is_some_and(|at| authority[..at].contains(':'))
+    })
+}
+
+/// `BEGIN <words> PRIVATE KEY`, whatever the words (none, `RSA`,
+/// `ENCRYPTED`, `DSA`, `PGP`, ...). Case-sensitive, as PEM headers are, so
+/// prose about "the private key" is not caught.
+fn pem_private_key(v: &str) -> bool {
+    v.match_indices("BEGIN ").any(|(i, _)| {
+        let rest = &v[i + 6..];
+        let words = rest
+            .bytes()
+            .take(40)
+            .take_while(|c| c.is_ascii_uppercase() || *c == b' ')
+            .count();
+        rest[..words].contains("PRIVATE KEY")
+    })
+}
+
+/// `(AKIA|ASIA)[A-Z0-9]{16}`, case-sensitive, not inside a longer word.
+fn aws_key_id(b: &[u8]) -> bool {
+    (0..b.len().saturating_sub(19)).any(|i| {
+        (b[i..].starts_with(b"AKIA") || b[i..].starts_with(b"ASIA"))
+            && (i == 0 || !b[i - 1].is_ascii_alphanumeric())
+            && b[i + 4..i + 20]
+                .iter()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+            && b.get(i + 20).is_none_or(|c| !c.is_ascii_alphanumeric())
+    })
+}
+
+/// `eyJ<base64url>{10,}.eyJ<base64url>{10,}.`: a JWT's header and payload
+/// both start with the base64 of `{"`.
+fn jwt(b: &[u8]) -> bool {
+    let b64 = |c: &u8| c.is_ascii_alphanumeric() || *c == b'-' || *c == b'_';
+    let segment = |at: usize| -> Option<usize> {
+        if !b.get(at..)?.starts_with(b"eyJ") {
+            return None;
+        }
+        let n = b[at + 3..].iter().take_while(|c| b64(c)).count();
+        (n >= 10 && b.get(at + 3 + n) == Some(&b'.')).then_some(at + 3 + n + 1)
+    };
+    (0..b.len()).any(|i| (i == 0 || !b64(&b[i - 1])) && segment(i).and_then(segment).is_some())
+}
+
 /// Walk a decoded JSON document and return the dotted paths of every
 /// forbidden key or value, sorted. Empty means clean. This is the whole-
 /// document form of the scan, used by `receipt verify` and before any packet
@@ -281,6 +389,49 @@ mod tests {
                 Err(Forbidden::Value),
                 "{s:?} should fail"
             );
+        }
+    }
+
+    #[test]
+    fn credential_shapes_fail_on_write_only() {
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig";
+        for s in [
+            "password: hunter2",
+            "Passwd:x",
+            "see https://admin:s3cret@10.0.0.5/login",
+            "ftp://u:p@host",
+            "key AKIAIOSFODNN7EXAMPLE in env",
+            "ASIAABCDEFGHIJKLMNOP",
+            jwt,
+            "github_pat_11ABCDEFG0123456789_abcdefghij",
+            "glpat-abcdefghijklmnopqrst",
+            "xoxb-1234567890-abcdef",
+            "-----BEGIN ENCRYPTED PRIVATE KEY-----",
+            "-----BEGIN DSA PRIVATE KEY-----",
+            "-----BEGIN PGP PRIVATE KEY BLOCK-----",
+        ] {
+            assert_eq!(MetadataOnly::scan(s), Err(Forbidden::Value), "{s:?}");
+            assert!(carries_credential(s), "{s:?}");
+        }
+        // Verification keeps the shell's patterns: a document the shell and
+        // Lite accept is not rejected here.
+        assert!(!value_is_forbidden("password: hunter2"));
+        assert!(!value_is_forbidden(jwt));
+        for s in [
+            "Password authentication enabled",
+            "ssh://git@github.com/org/repo",
+            "https://example.com:8443/path@x",
+            "http://[::1]:8080/",
+            "AKIAIOSFODNN7EXAMPL",   // 15 after the prefix
+            "XAKIAIOSFODNN7EXAMPLE", // inside a word
+            "eyJhbGciOiJIUzI1NiJ9 only a header",
+            "glpat-short",
+            "xoxb-1",
+            "begin the private key rotation",
+            "-----BEGIN PUBLIC KEY-----",
+            "github_pat_",
+        ] {
+            assert!(MetadataOnly::scan(s).is_ok(), "{s:?} should pass");
         }
     }
 
