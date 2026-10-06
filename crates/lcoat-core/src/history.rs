@@ -55,8 +55,7 @@ mod tests {
 
     #[test]
     fn records_and_reads_back() {
-        let dir = std::env::temp_dir().join(format!("lcoat-history-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = lcoat_format::fsutil::private_temp_dir("lcoat-history").unwrap();
         assert!(read(&dir).is_empty());
         record(&dir, "start", "demo").unwrap();
         record(&dir, "handoff", "/x/y.md").unwrap();

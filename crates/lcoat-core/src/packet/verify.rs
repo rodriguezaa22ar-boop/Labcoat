@@ -599,9 +599,7 @@ mod tests {
 
     #[test]
     fn disallowed_later_lists_sorted_unique_events() {
-        let dir = std::env::temp_dir().join(format!("lcoat-disallowed-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = lcoat_format::fsutil::private_temp_dir("lcoat-disallowed").unwrap();
         let p = dir.join("ledger.ndjson");
         std::fs::write(
             &p,

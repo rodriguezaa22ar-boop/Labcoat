@@ -24,6 +24,40 @@ pub fn mkdir_private(path: &Path) -> io::Result<()> {
     builder.create(path)
 }
 
+/// A new, empty, private (0700) directory under the system temp dir, named
+/// `<prefix>-<pid>-<nanos>-<n>`. It is created with a plain `mkdir`, never
+/// `mkdir -p`, so a name someone else already took (another user planting
+/// a directory or symlink in a shared `/tmp`, a leftover from an earlier
+/// process with the same pid) is skipped instead of reused. The caller
+/// removes it.
+pub fn private_temp_dir(prefix: &str) -> io::Result<PathBuf> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let base = std::env::temp_dir();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    for _ in 0..1000 {
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let dir = base.join(format!("{prefix}-{}-{nanos}-{n}", std::process::id()));
+        match builder.create(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "no free temporary directory name",
+    ))
+}
+
 /// Whether `path` is an existing regular file.
 pub fn file_exists(path: &Path) -> bool {
     path.metadata().map(|m| m.is_file()).unwrap_or(false)
@@ -49,8 +83,12 @@ pub fn write_private(path: &Path, data: &[u8]) -> io::Result<()> {
     let name = path
         .file_name()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?;
+    // pid and a per-process counter: two threads writing the same file
+    // must not collide on the temporary name.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp: PathBuf = dir.join(format!(
-        ".{}.{}.tmp",
+        ".{}.{}.{n}.tmp",
         name.to_string_lossy(),
         std::process::id()
     ));
@@ -102,10 +140,27 @@ mod tests {
     use super::*;
 
     fn tmpdir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("lcoat-fsutil-{}-{name}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        mkdir_private(&d).unwrap();
-        d
+        private_temp_dir(&format!("lcoat-fsutil-{name}")).unwrap()
+    }
+
+    /// Review 2026-10-05: test and stdin scratch directories were
+    /// `/tmp/lcoat-<what>-<pid>`, a name another user can take first.
+    #[test]
+    fn private_temp_dirs_are_new_empty_and_private() {
+        let a = private_temp_dir("lcoat-fsutil-unique").unwrap();
+        let b = private_temp_dir("lcoat-fsutil-unique").unwrap();
+        assert_ne!(a, b);
+        assert!(fs::read_dir(&a).unwrap().next().is_none());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&a).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+        let _ = fs::remove_dir(&a);
+        let _ = fs::remove_dir(&b);
     }
 
     #[test]

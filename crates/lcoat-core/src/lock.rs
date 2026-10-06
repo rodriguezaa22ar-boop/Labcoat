@@ -73,8 +73,7 @@ mod tests {
 
     #[test]
     fn lock_is_exclusive_and_released_on_drop() {
-        let dir = std::env::temp_dir().join(format!("lcoat-lock-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = lcoat_format::fsutil::private_temp_dir("lcoat-lock").unwrap();
         let first = Lock::acquire(&dir).unwrap();
         assert!(first.path().is_file());
         // A second non-blocking attempt on the same file fails while held.

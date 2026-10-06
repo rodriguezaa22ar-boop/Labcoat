@@ -901,9 +901,7 @@ mod tests {
     use super::*;
 
     fn root(name: &str) -> (LabRoot, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("lcoat-op-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = lcoat_format::fsutil::private_temp_dir(&format!("lcoat-op-{name}")).unwrap();
         (LabRoot::at(&dir).unwrap(), dir)
     }
 

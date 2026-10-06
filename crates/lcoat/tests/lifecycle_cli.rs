@@ -8,10 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 fn fresh(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("lcoat-cli-life-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    lcoat_format::fsutil::private_temp_dir(&format!("lcoat-cli-life-{name}")).unwrap()
 }
 
 fn lcoat(root: &Path, args: &[&str]) -> Output {

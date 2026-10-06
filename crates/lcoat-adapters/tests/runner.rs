@@ -16,9 +16,7 @@ use lcoat_core::tier::Tier;
 use lcoat_format::clock::Utc;
 
 fn fresh(name: &str) -> (LabRoot, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("lcoat-runner-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = lcoat_format::fsutil::private_temp_dir(&format!("lcoat-runner-{name}")).unwrap();
     let root = LabRoot::at(&dir).unwrap();
     declare(&root, "127.0.0.1", "in-scope");
     (root, dir)

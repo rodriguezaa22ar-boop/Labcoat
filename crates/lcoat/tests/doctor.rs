@@ -8,10 +8,7 @@ use std::process::{Command, Output};
 use lcoat_format::json::Value;
 
 fn fresh(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("lcoat-doctor-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    lcoat_format::fsutil::private_temp_dir(&format!("lcoat-doctor-{name}")).unwrap()
 }
 
 fn cmd(root: Option<&Path>, args: &[&str]) -> Output {

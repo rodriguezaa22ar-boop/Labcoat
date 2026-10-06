@@ -100,9 +100,7 @@ mod tests {
 
     #[test]
     fn next_id_suffixes_on_collision() {
-        let dir = std::env::temp_dir().join(format!("lcoat-ids-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::fsutil::private_temp_dir("lcoat-ids").unwrap();
         let now = Utc::parse("2026-10-02T07:40:00Z").unwrap();
         let first = next_id_at(&dir, "ev", now);
         assert_eq!(first, "ev_20261002T074000Z");
