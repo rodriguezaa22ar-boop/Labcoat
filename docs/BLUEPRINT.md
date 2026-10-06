@@ -185,6 +185,16 @@ Everything above except the last clause is done and checked by `conformance/cros
 Twice in the field a `<placeholder>` in a pasted command became a shell redirect (one of them let `op start` run on an undeclared target). Commands that create something now end with `next: lcoat ...` lines carrying the real ids, quoted for bash and zsh (`'...'` with `'\''`; plain words bare): `target add` (start an operation, or a note that a non-in-scope target will not be contacted), `finding add` (resolve or accept that finding), `op close` (closeout by name), and `adapter run`, which prints one ready-to-run `finding add` per proposed finding with this run's evidence id. Titles there come from service banners chosen by the scanned host, so the quoting is tested through a real bash with command substitution, backticks, quotes and globs, and a printed line is executed in the CLI tests. `op status` gains an `Adapter Runs:` line when there are any (the shell's `Recon Runs` counts a different feature and stays as it is, so shell-written operations print byte-identically).
 
 This also closed a quiet gap: the trust chain used to take any recorded review packet as verified without reading it (inherited from Lite). It now verifies the latest one, so a changed finding index after the review shows `Accepted Risk Review Packet: attention-required`.
+### One argument parser for every verb (review 2026-10-05)
+
+`op start t1 node --profile foo` ran with the default profile and recorded `--profile foo` as notes; the profile decides what scope allows. `target add` had the same shape, and read-only verbs ignored flags they did not know: `op status --json` printed text and exited 0, which a script would take as JSON support.
+
+- `cli/args.rs` is the only argument parser. Each verb declares a `Spec`: its usage line, its flags (switch, single value, or repeatable; `"--op|--operation"` declares an alias) and how many positionals it takes.
+- The rules are the same everywhere. Flags may come before, between or after positionals, as `--flag value` or `--flag=value`. An unknown flag, an extra positional, a missing value or a single-value flag given twice is an error that names it and prints the verb's usage. `--` ends the flags, so notes that start with `--` can still be recorded, and a lone `-` is positional.
+- `adapter run` keeps its own loop on purpose: everything after `<target>` belongs to the tool (whose adapter parses it strictly), except `--timeout`.
+- `hash` and `scan` take files and free text only, unchanged.
+- Stricter than the shell, which ignores unknown words in several verbs. The conformance scenarios pass only arguments every build accepts, so their output is unchanged.
+
 ### Fuzzing (after phase 2)
 
 Thirteen targets, each a function in `crates/lcoat-fuzz/src/targets.rs` that feeds bytes to a parser the way the binary does and asserts what makes the parser safe to trust, not only that it does not panic:

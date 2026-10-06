@@ -226,7 +226,12 @@ fn lists_and_scope_status_render_golden_state() {
     // Usage errors for the read-only loaders.
     let out = golden_cmd(&["finding", "list", "a", "b"]);
     assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("usage: finding list [operation]"));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("unexpected argument: b"), "{err}");
+    assert!(
+        err.contains("usage: lcoat finding list [operation]"),
+        "{err}"
+    );
 }
 
 #[test]

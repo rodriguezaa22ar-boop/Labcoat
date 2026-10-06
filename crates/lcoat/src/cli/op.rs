@@ -16,9 +16,9 @@ use lcoat_format::hash::Sha256Hex;
 use lcoat_format::ids::slugify;
 use lcoat_format::json::{Object, Value};
 
+use super::args::{Kind, Spec, parse};
 use super::{
-    CliError, CmdResult, Ctx, fail, first_name, load_active, load_closed, metadata, mutable_root,
-    need_args, option, root, two_names,
+    CliError, CmdResult, Ctx, fail, load_active, load_closed, metadata, mutable_root, root,
 };
 
 /// Dispatch `op <verb>`.
@@ -31,7 +31,7 @@ pub fn run(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
     match verb.as_str() {
         "start" => start(ctx, rest),
         "resume" => resume_cmd(ctx, rest),
-        "list" => list(ctx),
+        "list" => list(ctx, rest),
         "status" => status(ctx, rest),
         "show" => show(ctx, rest),
         "brief" => brief(ctx, rest),
@@ -67,42 +67,37 @@ fn emit(ctx: &mut Ctx<'_>, o: Object) {
     ctx.raw(&bytes);
 }
 
-fn split_json(args: &[String]) -> (Vec<String>, bool) {
-    let json = args.iter().any(|a| a == "--json");
-    (
-        args.iter().filter(|a| *a != "--json").cloned().collect(),
-        json,
-    )
+const JSON: &[(&str, Kind)] = &[("--json", Kind::Switch)];
+
+/// `[name]` and nothing else, for the read-only summaries.
+fn name_only(args: &[String], usage: &'static str) -> Result<String, CliError> {
+    Ok(parse(&Spec::new(usage, 0, Some(1)), args)?
+        .pos(0)
+        .to_owned())
+}
+
+/// `[name] [file-name]` for the packet and report writers.
+fn two_names(args: &[String], usage: &'static str) -> Result<(String, String), CliError> {
+    let a = parse(&Spec::new(usage, 0, Some(2)), args)?;
+    Ok((a.pos(0).to_owned(), a.pos(1).to_owned()))
 }
 
 // --- lifecycle --------------------------------------------------------------
 
 fn start(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
-    const USAGE: &str = "op start [--profile profile] <name> <target> [notes...]";
-    let mut p = StartParams {
-        profile: "default".into(),
-        ..Default::default()
+    const SPEC: Spec = Spec::new(
+        "op start [--profile profile] <name> <target> [notes...]",
+        2,
+        None,
+    )
+    .flags(&[("--profile", Kind::Value)]);
+    let a = parse(&SPEC, args)?;
+    let p = StartParams {
+        profile: a.value("--profile").unwrap_or("default").to_owned(),
+        name: a.pos(0).to_owned(),
+        target: a.pos(1).to_owned(),
+        notes: metadata("notes", &a.rest(2).join(" "))?.as_str().to_owned(),
     };
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--profile" => {
-                p.profile = option(args, i, USAGE)?.to_owned();
-                i += 2;
-            }
-            "--" => {
-                i += 1;
-                break;
-            }
-            a if a.starts_with("--") => return Err(fail(format!("unknown op start option: {a}"))),
-            _ => break,
-        }
-    }
-    let pos = &args[i..];
-    need_args(2, pos, USAGE)?;
-    p.name = pos[0].clone();
-    p.target = pos[1].clone();
-    p.notes = metadata("notes", &pos[2..].join(" "))?.as_str().to_owned();
     metadata("name", &p.name)?;
     let root = mutable_root()?;
     let (op, profile) = Operation::start(&root, &p)?;
@@ -127,9 +122,9 @@ fn start(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 }
 
 fn resume_cmd(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
-    need_args(1, args, "op resume <name>")?;
+    let a = parse(&Spec::new("op resume <name>", 1, Some(1)), args)?;
     let root = mutable_root()?;
-    let op = resume(&root, &args[0])?;
+    let op = resume(&root, a.pos(0))?;
     ctx.ok("operation active");
     ctx.kv("operation", &op.name);
     ctx.kv("target", &op.target);
@@ -140,7 +135,8 @@ fn resume_cmd(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
     Ok(())
 }
 
-fn list(ctx: &mut Ctx<'_>) -> CmdResult {
+fn list(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
+    parse(&Spec::new("op list", 0, Some(0)), args)?;
     let root = root()?;
     let ops = Operation::list(&root)?;
     ctx.line(&format!(
@@ -166,14 +162,18 @@ fn list(ctx: &mut Ctx<'_>) -> CmdResult {
     Ok(())
 }
 
-fn load_any(root: &LabRoot, args: &[String]) -> Result<Operation<AnyState>, CliError> {
-    Ok(Operation::load_named_or_active(root, first_name(args))?)
+fn load_any(root: &LabRoot, name: &str) -> Result<Operation<AnyState>, CliError> {
+    Ok(Operation::load_named_or_active(root, name)?)
 }
 
 fn readiness_cmd(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
+    let a = parse(
+        &Spec::new("op readiness [name] [--json]", 0, Some(1)).flags(JSON),
+        args,
+    )?;
+    let json = a.has("--json");
     let root = root()?;
-    let (names, json) = split_json(args);
-    let op = load_any(&root, &names)?;
+    let op = load_any(&root, a.pos(0))?;
     let st = readiness::collect(&op)?;
     if json {
         let mut o = Object::new();
@@ -211,20 +211,12 @@ fn readiness_cmd(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 }
 
 fn close(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
-    let mut force = false;
-    let mut name = "";
-    for a in args {
-        match a.as_str() {
-            "--force" => force = true,
-            x if x.starts_with('-') => return Err(fail(format!("unknown op close option: {x}"))),
-            x => {
-                if !name.is_empty() {
-                    return Err(fail(format!("unexpected op close argument: {x}")));
-                }
-                name = x;
-            }
-        }
-    }
+    let a = parse(
+        &Spec::new("op close [name] [--force]", 0, Some(1)).flags(&[("--force", Kind::Switch)]),
+        args,
+    )?;
+    let force = a.has("--force");
+    let name = a.pos(0);
     let root = mutable_root()?;
     let op = load_active(&root, name)?;
     let st = readiness::collect(&op)?;
@@ -248,7 +240,8 @@ fn close(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 }
 
 fn report_cmd(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
-    let (name, report_name) = two_names(args);
+    let (name, report_name) = two_names(args, "op report [name] [report-name]")?;
+    let (name, report_name) = (name.as_str(), report_name.as_str());
     let root = mutable_root()?;
     let op = Operation::load_named_or_active(&root, name)?;
     let path = report::write(&op, report_name)?;
@@ -258,7 +251,8 @@ fn report_cmd(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 }
 
 fn handoff(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
-    let (name, packet_name) = two_names(args);
+    let (name, packet_name) = two_names(args, "op handoff [name] [handoff-name]")?;
+    let (name, packet_name) = (name.as_str(), packet_name.as_str());
     let root = mutable_root()?;
     let op = Operation::load_named_or_active(&root, name)?;
     let w = packet::handoff(&op, packet_name)?;
@@ -268,7 +262,8 @@ fn handoff(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 }
 
 fn closeout(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
-    let (name, manifest_name) = two_names(args);
+    let (name, manifest_name) = two_names(args, "op closeout [name] [manifest-name]")?;
+    let (name, manifest_name) = (name.as_str(), manifest_name.as_str());
     let root = mutable_root()?;
     let op = load_closed(&root, name, "closeout")?;
     let w = packet::closeout(&op, manifest_name)?;
@@ -278,7 +273,8 @@ fn closeout(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 }
 
 fn audit_packet(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
-    let (name, packet_name) = two_names(args);
+    let (name, packet_name) = two_names(args, "op audit-packet [name] [packet-name]")?;
+    let (name, packet_name) = (name.as_str(), packet_name.as_str());
     let root = mutable_root()?;
     let op = load_closed(&root, name, "audit-packet")?;
     let closeout = packet::latest(&op, "closeout")?;
@@ -289,7 +285,8 @@ fn audit_packet(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 }
 
 fn archive_packet(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
-    let (name, packet_name) = two_names(args);
+    let (name, packet_name) = two_names(args, "op archive-packet [name] [packet-name]")?;
+    let (name, packet_name) = (name.as_str(), packet_name.as_str());
     let root = mutable_root()?;
     let op = load_closed(&root, name, "archive-packet")?;
     let audit = packet::latest(&op, "audit")?;
@@ -361,8 +358,9 @@ fn print_summary<S: State>(ctx: &mut Ctx<'_>, op: &Operation<S>) -> CmdResult {
 }
 
 fn status(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
+    let name = name_only(args, "op status [name]")?;
     let root = root()?;
-    let op = load_any(&root, args)?;
+    let op = load_any(&root, &name)?;
     ctx.heading("Operation Status");
     ctx.rule();
     print_summary(ctx, &op)?;
@@ -399,8 +397,9 @@ fn status(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 }
 
 fn show(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
+    let name = name_only(args, "op show [name]")?;
     let root = root()?;
-    let op = load_any(&root, args)?;
+    let op = load_any(&root, &name)?;
     let snap = op.snapshot()?;
     ctx.heading("Operation Scope");
     ctx.rule();
@@ -427,8 +426,9 @@ fn show(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 }
 
 fn brief(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
+    let name = name_only(args, "op brief [name]")?;
     let root = root()?;
-    let op = load_any(&root, args)?;
+    let op = load_any(&root, &name)?;
     let b = Brief::collect(&op)?;
     ctx.heading("Operator Brief");
     ctx.rule();
@@ -511,16 +511,15 @@ fn resolve_packet_path(
 }
 
 fn verify(ctx: &mut Ctx<'_>, args: &[String], subdir: &str) -> CmdResult {
-    let (names, json) = split_json(args);
-    if names.len() > 2 {
-        return Err(fail(format!(
-            "op {} [name] [{}] [--json]",
-            verb_for(subdir),
-            arg_name(subdir)
-        )));
-    }
+    let usage = match subdir {
+        "closeout" => "op verify [name] [closeout-manifest] [--json]",
+        "audit" => "op audit-verify [name] [audit-packet] [--json]",
+        _ => "op archive-verify [name] [archive-packet] [--json]",
+    };
+    let a = parse(&Spec::new(usage, 0, Some(2)).flags(JSON), args)?;
+    let json = a.has("--json");
     let root = root()?;
-    let (op, path) = resolve_verify_args(&root, &names, subdir)?;
+    let (op, path) = resolve_verify_args(&root, &a.pos, subdir)?;
     let res = match subdir {
         "closeout" => packet::closeout_verify(&op, &path)?,
         "audit" => packet::audit_verify(&op, &path)?,
@@ -548,22 +547,6 @@ fn verify(ctx: &mut Ctx<'_>, args: &[String], subdir: &str) -> CmdResult {
         };
     }
     print_verify(ctx, &op, &path, &res)
-}
-
-fn verb_for(subdir: &str) -> &'static str {
-    match subdir {
-        "closeout" => "verify",
-        "audit" => "audit-verify",
-        _ => "archive-verify",
-    }
-}
-
-fn arg_name(subdir: &str) -> &'static str {
-    match subdir {
-        "closeout" => "closeout-manifest",
-        "audit" => "audit-packet",
-        _ => "archive-packet",
-    }
 }
 
 /// The shell build's verification table: heading, operation, packet path,
@@ -598,24 +581,12 @@ fn print_verify(
 }
 
 fn trust_chain(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
-    let mut strict = false;
-    let mut json = false;
-    let mut name = "";
-    for a in args {
-        match a.as_str() {
-            "--strict" => strict = true,
-            "--json" => json = true,
-            x if x.starts_with('-') => {
-                return Err(fail(format!("unknown op trust-chain option: {x}")));
-            }
-            x => {
-                if !name.is_empty() {
-                    return Err(fail("op trust-chain [name] [--strict] [--json]"));
-                }
-                name = x;
-            }
-        }
-    }
+    let a = parse(
+        &Spec::new("op trust-chain [name] [--strict] [--json]", 0, Some(1))
+            .flags(&[("--strict", Kind::Switch), ("--json", Kind::Switch)]),
+        args,
+    )?;
+    let (strict, json, name) = (a.has("--strict"), a.has("--json"), a.pos(0));
     let root = root()?;
     let op = Operation::load_named_or_active(&root, name)?;
     let tc = packet::collect_trust_chain(&op)?;

@@ -5,10 +5,8 @@ use lcoat_core::metadata::MetadataOnly;
 use lcoat_core::operation::Operation;
 use lcoat_core::packet::review;
 
-use super::{
-    CmdResult, Ctx, fail, load_active, load_read_only_op, metadata, mutable_root, need_args,
-    option, root,
-};
+use super::args::{Args, Kind, Spec, parse};
+use super::{CmdResult, Ctx, fail, load_active, metadata, mutable_root, root};
 
 /// Dispatch `finding <verb>`.
 pub fn run(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
@@ -63,35 +61,41 @@ fn print_finding(ctx: &mut Ctx<'_>, f: &Finding) {
 }
 
 fn add(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
-    const USAGE: &str = "finding add <title> [--level observed|inferred|validated] [--severity severity] [--confidence confidence] [--status status] [--impact text] [--recommendation text] [--evidence id]";
-    need_args(1, args, USAGE)?;
-    let mut p = AddParams {
-        title: Some(metadata("title", &args[0])?),
-        ..Default::default()
+    const SPEC: Spec = Spec::new(
+        "finding add <title> [--level observed|inferred|validated] [--severity severity] [--confidence confidence] [--status status] [--impact text] [--recommendation text] [--evidence id]...",
+        1,
+        Some(1),
+    )
+    .flags(&[
+        ("--target", Kind::Value),
+        ("--level", Kind::Value),
+        ("--severity", Kind::Value),
+        ("--confidence", Kind::Value),
+        ("--status", Kind::Value),
+        ("--source", Kind::Value),
+        ("--impact", Kind::Value),
+        ("--recommendation", Kind::Value),
+        ("--evidence", Kind::Many),
+    ]);
+    let a = parse(&SPEC, args)?;
+    let scanned = |flag: &str| a.value(flag).map(|v| metadata(flag, v)).transpose();
+    let plain = |flag: &str| a.value(flag).unwrap_or("").to_owned();
+    let p = AddParams {
+        title: Some(metadata("title", a.pos(0))?),
+        target: scanned("--target")?,
+        level: plain("--level"),
+        severity: plain("--severity"),
+        confidence: plain("--confidence"),
+        status: plain("--status"),
+        source: plain("--source"),
+        impact: scanned("--impact")?,
+        recommendation: scanned("--recommendation")?,
+        evidence: a
+            .values("--evidence")
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
     };
-    let rest = &args[1..];
-    let mut i = 0;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            flag @ ("--target" | "--level" | "--severity" | "--confidence" | "--status"
-            | "--source" | "--impact" | "--recommendation" | "--evidence") => {
-                let v = option(rest, i, &format!("finding add <title> {flag} <value>"))?;
-                match flag {
-                    "--target" => p.target = Some(metadata(flag, v)?),
-                    "--level" => p.level = v.to_owned(),
-                    "--severity" => p.severity = v.to_owned(),
-                    "--confidence" => p.confidence = v.to_owned(),
-                    "--status" => p.status = v.to_owned(),
-                    "--source" => p.source = v.to_owned(),
-                    "--impact" => p.impact = Some(metadata(flag, v)?),
-                    "--recommendation" => p.recommendation = Some(metadata(flag, v)?),
-                    _ => p.evidence.push(v.to_owned()),
-                }
-                i += 2;
-            }
-            other => return Err(fail(format!("unknown finding add option: {other}"))),
-        }
-    }
     let root = mutable_root()?;
     let op = load_active(&root, "")?;
     let f = findings::add(&op, &p)?;
@@ -119,35 +123,29 @@ fn add(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 /// `<id> [--evidence id]... [--note text]`
 fn id_evidence_note(
     args: &[String],
-    usage: &str,
+    spec: &Spec,
 ) -> Result<(String, Vec<String>, Option<MetadataOnly>), super::CliError> {
-    need_args(1, args, usage)?;
-    let id = args[0].clone();
-    let mut evidence = Vec::new();
-    let mut note = None;
-    let rest = &args[1..];
-    let mut i = 0;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "--evidence" => {
-                evidence.push(option(rest, i, usage)?.to_owned());
-                i += 2;
-            }
-            "--note" => {
-                note = Some(metadata("--note", option(rest, i, usage)?)?);
-                i += 2;
-            }
-            other => return Err(fail(format!("unknown option: {other}\nusage: {usage}"))),
-        }
-    }
-    Ok((id, evidence, note))
+    let a = parse(spec, args)?;
+    let evidence = a
+        .values("--evidence")
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let note = a
+        .value("--note")
+        .map(|v| metadata("--note", v))
+        .transpose()?;
+    Ok((a.pos(0).to_owned(), evidence, note))
 }
 
 fn resolve(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
-    let (id, evidence, note) = id_evidence_note(
-        args,
+    const SPEC: Spec = Spec::new(
         "finding resolve <id> [--evidence id]... [--note text]",
-    )?;
+        1,
+        Some(1),
+    )
+    .flags(&[("--evidence", Kind::Many), ("--note", Kind::Value)]);
+    let (id, evidence, note) = id_evidence_note(args, &SPEC)?;
     let root = mutable_root()?;
     let op = load_active(&root, "")?;
     let f = findings::resolve(&op, &id, &evidence, note)?;
@@ -157,12 +155,9 @@ fn resolve(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 }
 
 fn reopen(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
-    let (id, evidence, note) = id_evidence_note(args, "finding reopen <id> [--note text]")?;
-    if !evidence.is_empty() {
-        return Err(fail(
-            "finding reopen takes no --evidence; add it with 'finding resolve' or 'finding note'",
-        ));
-    }
+    const SPEC: Spec = Spec::new("finding reopen <id> [--note text]", 1, Some(1))
+        .flags(&[("--note", Kind::Value)]);
+    let (id, _, note) = id_evidence_note(args, &SPEC)?;
     let root = mutable_root()?;
     let op = load_active(&root, "")?;
     let f = findings::reopen(&op, &id, note)?;
@@ -172,13 +167,13 @@ fn reopen(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 }
 
 fn note(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
-    need_args(2, args, "finding note <id> <text>")?;
-    let text = metadata("note", &args[1..].join(" "))?;
+    let a = parse(&Spec::new("finding note <id> <text>", 2, None), args)?;
+    let text = metadata("note", &a.rest(1).join(" "))?;
     let root = mutable_root()?;
     let op = load_active(&root, "")?;
     let f = findings::update(
         &op,
-        &args[0],
+        a.pos(0),
         &Update {
             note: Some(text),
             ..Default::default()
@@ -190,29 +185,38 @@ fn note(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 }
 
 fn accept(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
-    const USAGE: &str = "finding accept <id> --reason text [--owner owner] [--expires YYYY-MM-DD|timestamp|Nh|Nd] [--evidence id]...";
-    need_args(1, args, USAGE)?;
-    let id = args[0].clone();
-    let mut reason = None;
-    let mut owner = None;
-    let mut expires = None;
-    let mut evidence = Vec::new();
-    let rest = &args[1..];
-    let mut i = 0;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "--reason" => reason = Some(metadata("--reason", option(rest, i, USAGE)?)?),
-            "--owner" => owner = Some(metadata("--owner", option(rest, i, USAGE)?)?),
-            // Same forms as approvals (YYYY-MM-DD, timestamp, Nh, Nd),
-            // stored as the instant they name.
-            "--expires" | "--until" => {
-                expires = Some(super::approval::parse_expiry(option(rest, i, USAGE)?)?.timestamp())
-            }
-            "--evidence" => evidence.push(option(rest, i, USAGE)?.to_owned()),
-            other => return Err(fail(format!("unknown finding accept option: {other}"))),
-        }
-        i += 2;
-    }
+    const SPEC: Spec = Spec::new(
+        "finding accept <id> --reason text [--owner owner] [--expires YYYY-MM-DD|timestamp|Nh|Nd] [--evidence id]...",
+        1,
+        Some(1),
+    )
+    .flags(&[
+        ("--reason", Kind::Value),
+        ("--owner", Kind::Value),
+        ("--expires|--until", Kind::Value),
+        ("--evidence", Kind::Many),
+    ]);
+    let a = parse(&SPEC, args)?;
+    let id = a.pos(0).to_owned();
+    let reason = a
+        .value("--reason")
+        .map(|v| metadata("--reason", v))
+        .transpose()?;
+    let owner = a
+        .value("--owner")
+        .map(|v| metadata("--owner", v))
+        .transpose()?;
+    // Same forms as approvals (YYYY-MM-DD, timestamp, Nh, Nd), stored as
+    // the instant they name.
+    let expires = a
+        .value("--expires")
+        .map(|v| super::approval::parse_expiry(v).map(|t| t.timestamp()))
+        .transpose()?;
+    let evidence: Vec<String> = a
+        .values("--evidence")
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
     let Some(reason) = reason else {
         return Err(fail("acceptance reason is required"));
     };
@@ -244,8 +248,9 @@ fn accept(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 }
 
 fn list(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
+    let a = parse(&Spec::new("finding list [operation]", 0, Some(1)), args)?;
     let root = root()?;
-    let op = load_read_only_op(&root, args, "finding list [operation]")?;
+    let op = Operation::load_named_or_active(&root, a.pos(0))?;
     let rows = findings::rows(&op.dir, &op.target, 1_000_000)?;
     if rows.is_empty() {
         ctx.note("no findings recorded yet");
@@ -261,55 +266,36 @@ fn list(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 
 /// `[--op operation] [--within days] [name]`: the operation (active unless
 /// named; a closed one can be reviewed without resuming it), the window,
-/// and at most one positional argument.
+/// and the positional argument when the verb takes one.
 struct ReviewArgs {
     op: String,
     window: u32,
     name: String,
 }
 
-fn review_args(
-    args: &[String],
-    usage: &str,
-    takes_window: bool,
-) -> Result<ReviewArgs, super::CliError> {
-    let mut r = ReviewArgs {
-        op: String::new(),
-        window: review::DEFAULT_WINDOW,
-        name: String::new(),
-    };
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--op" | "--operation" => {
-                r.op = option(args, i, usage)?.to_owned();
-                i += 2;
-            }
-            "--within" | "--window" if takes_window => {
-                r.window = review::parse_window(option(args, i, usage)?)?;
-                i += 2;
-            }
-            a if a.starts_with('-') => {
-                return Err(fail(format!("unknown option: {a}\nusage: {usage}")));
-            }
-            a => {
-                if !r.name.is_empty() {
-                    return Err(fail(format!("usage: {usage}")));
-                }
-                r.name = a.to_owned();
-                i += 1;
-            }
-        }
-    }
-    Ok(r)
+fn review_args(args: &[String], spec: &Spec) -> Result<ReviewArgs, super::CliError> {
+    let a: Args = parse(spec, args)?;
+    Ok(ReviewArgs {
+        op: a.value("--op").unwrap_or("").to_owned(),
+        window: match a.value("--within") {
+            Some(v) => review::parse_window(v)?,
+            None => review::DEFAULT_WINDOW,
+        },
+        name: a.pos(0).to_owned(),
+    })
 }
 
 fn review_queue(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
-    const USAGE: &str = "finding review-queue [--op operation] [--within days]";
-    let a = review_args(args, USAGE, true)?;
-    if !a.name.is_empty() {
-        return Err(fail(format!("usage: {USAGE}")));
-    }
+    const SPEC: Spec = Spec::new(
+        "finding review-queue [--op operation] [--within days]",
+        0,
+        Some(0),
+    )
+    .flags(&[
+        ("--op|--operation", Kind::Value),
+        ("--within|--window", Kind::Value),
+    ]);
+    let a = review_args(args, &SPEC)?;
     let root = root()?;
     let op = Operation::load_named_or_active(&root, &a.op)?;
     let q = review::queue(&op, a.window)?;
@@ -336,8 +322,16 @@ fn review_queue(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 }
 
 fn review_packet(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
-    const USAGE: &str = "finding review-packet [--op operation] [--within days] [packet-name]";
-    let a = review_args(args, USAGE, true)?;
+    const SPEC: Spec = Spec::new(
+        "finding review-packet [--op operation] [--within days] [packet-name]",
+        0,
+        Some(1),
+    )
+    .flags(&[
+        ("--op|--operation", Kind::Value),
+        ("--within|--window", Kind::Value),
+    ]);
+    let a = review_args(args, &SPEC)?;
     let root = mutable_root()?;
     let op = Operation::load_named_or_active(&root, &a.op)?;
     let w = review::write(&op, &a.name, a.window)?;
@@ -353,8 +347,13 @@ fn review_packet(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 }
 
 fn review_verify(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
-    const USAGE: &str = "finding review-verify [--op operation] [packet]";
-    let a = review_args(args, USAGE, false)?;
+    const SPEC: Spec = Spec::new(
+        "finding review-verify [--op operation] [packet]",
+        0,
+        Some(1),
+    )
+    .flags(&[("--op|--operation", Kind::Value)]);
+    let a = review_args(args, &SPEC)?;
     let root = root()?;
     let op = Operation::load_named_or_active(&root, &a.op)?;
     let path = review::resolve_packet(&op, &a.name)?;

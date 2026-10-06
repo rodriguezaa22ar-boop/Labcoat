@@ -13,7 +13,10 @@ pub fn run(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
         ));
     };
     match verb.as_str() {
-        "list" => list(ctx),
+        "list" => {
+            super::args::parse(&super::args::Spec::new("adapter list", 0, Some(0)), rest)?;
+            list(ctx)
+        }
         "run" => run_adapter(ctx, rest),
         other => Err(fail(format!("unknown adapter command: {other}"))),
     }
