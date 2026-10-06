@@ -185,6 +185,14 @@ Everything above except the last clause is done and checked by `conformance/cros
 Twice in the field a `<placeholder>` in a pasted command became a shell redirect (one of them let `op start` run on an undeclared target). Commands that create something now end with `next: lcoat ...` lines carrying the real ids, quoted for bash and zsh (`'...'` with `'\''`; plain words bare): `target add` (start an operation, or a note that a non-in-scope target will not be contacted), `finding add` (resolve or accept that finding), `op close` (closeout by name), and `adapter run`, which prints one ready-to-run `finding add` per proposed finding with this run's evidence id. Titles there come from service banners chosen by the scanned host, so the quoting is tested through a real bash with command substitution, backticks, quotes and globs, and a printed line is executed in the CLI tests. `op status` gains an `Adapter Runs:` line when there are any (the shell's `Recon Runs` counts a different feature and stays as it is, so shell-written operations print byte-identically).
 
 This also closed a quiet gap: the trust chain used to take any recorded review packet as verified without reading it (inherited from Lite). It now verifies the latest one, so a changed finding index after the review shows `Accepted Risk Review Packet: attention-required`.
+### Approvals: parsed expiry, this operation, this tier (review 2026-10-05)
+
+An approval was current when its `expires_at` sorted after the current timestamp as text, so a hand-edited `"9999"` or `"garbage"` never expired. A record naming another operation (copied in with the directory) was honoured, and a record with no expiry was current forever.
+
+- `Grant::is_current` parses `expires_at` with the same strict parser as every other timestamp (`Utc::parse`); missing or unparseable means not current. It also requires the record's `tier` to be the capability's tier.
+- `approval::current` only looks at records whose `op` is this operation, so another operation's grant neither grants nor revokes here.
+- A deliberate divergence: shell- and Lite-written approvals have no `expires_at` and are no longer current in Lab Coat. Re-grant with `approval grant ... --expires`. The conformance scenario records no approvals, so its output is unchanged.
+
 ### Fuzzing (after phase 2)
 
 Thirteen targets, each a function in `crates/lcoat-fuzz/src/targets.rs` that feeds bytes to a parser the way the binary does and asserts what makes the parser safe to trust, not only that it does not panic:
