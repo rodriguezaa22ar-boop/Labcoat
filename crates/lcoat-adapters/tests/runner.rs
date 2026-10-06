@@ -78,7 +78,9 @@ fn script_run_records_events_and_captures_evidence() {
     .unwrap();
     assert_eq!(stored, "hello world\n");
     assert!(
-        !op.dir.join("tmp/script-output.txt").exists(),
+        std::fs::read_dir(op.dir.join("tmp"))
+            .map(|mut d| d.next().is_none())
+            .unwrap_or(true),
         "capture temp removed"
     );
 
