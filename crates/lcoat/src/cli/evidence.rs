@@ -358,7 +358,7 @@ fn diff(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
         ctx.kv(label, &count(c).to_string());
     }
     for w in &warnings {
-        ctx.line(&format!("warning: {w}"));
+        ctx.warn(w);
     }
     Ok(())
 }

@@ -885,8 +885,15 @@ fn evidence_diff_compares_two_scans() {
 
     // A host-down run is flagged, not read as "everything closed".
     let down = add("down.txt", &report(&[], 0));
-    let out = ok(&lcoat(&root, &["evidence", "diff", &b, &down]));
-    assert!(out.contains("host down"), "{out}");
+    // Warnings go to stderr, so a script reading stdout never sees them.
+    let run = lcoat(&root, &["evidence", "diff", &b, &down]);
+    let out = ok(&run);
+    let warn = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        warn.starts_with("warning: ") && warn.contains("host down"),
+        "{warn}"
+    );
+    assert!(!out.contains("warning:"), "{out}");
 
     // Not an nmap report; then a capture edited after the fact.
     let notes = add("notes.txt", "just notes\n");

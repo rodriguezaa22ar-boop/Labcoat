@@ -118,7 +118,7 @@ fn run_adapter(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
     ctx.kv("evidence", &out.evidence_id);
     ctx.kv("sha256", &out.sha256);
     for w in &out.warnings {
-        ctx.line(&format!("warning: {}", w.message));
+        ctx.warn(&w.message);
     }
     if out.timed_out {
         ctx.note("this run was stopped at its timeout: whatever nmap had not finished was not tested, so missing findings are not evidence of closed ports; rerun with a longer --timeout");

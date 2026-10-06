@@ -122,9 +122,43 @@ pub type CmdResult = std::result::Result<(), CliError>;
 /// Output streams for one invocation.
 pub struct Ctx<'a> {
     /// Standard output.
-    pub out: &'a mut dyn Write,
+    pub out: Tracked<'a>,
     /// Standard error.
     pub err: &'a mut dyn Write,
+}
+
+/// Standard output that remembers its first write error. Commands write
+/// without checking each line; [`run`] checks once at the end, so a full
+/// disk or a closed pipe can no longer turn into exit 0 with the output
+/// lost (`receipt create > /full/disk` used to succeed). After the first
+/// error the rest of the output is dropped.
+pub struct Tracked<'a> {
+    inner: &'a mut dyn Write,
+    failed: Option<std::io::Error>,
+}
+
+impl Write for Tracked<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if self.failed.is_some() {
+            return Ok(buf.len());
+        }
+        match self.inner.write(buf) {
+            Err(e) if e.kind() != std::io::ErrorKind::Interrupted => {
+                self.failed = Some(e);
+                Ok(buf.len())
+            }
+            r => r,
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        if self.failed.is_none()
+            && let Err(e) = self.inner.flush()
+        {
+            self.failed = Some(e);
+        }
+        Ok(())
+    }
 }
 
 impl Ctx<'_> {
@@ -156,6 +190,12 @@ impl Ctx<'_> {
     pub fn raw(&mut self, bytes: &[u8]) {
         let _ = self.out.write_all(bytes);
     }
+    /// `warning: msg`, on standard error so it never mixes into output a
+    /// script parses. (Both callers are adapter features.)
+    #[cfg_attr(not(feature = "adapters"), allow(dead_code))]
+    pub fn warn(&mut self, msg: &str) {
+        let _ = writeln!(self.err, "warning: {msg}");
+    }
 }
 
 /// Build an operator-facing error.
@@ -185,9 +225,15 @@ pub fn option<'a>(
 
 /// Run argv (without the program name); returns the exit code.
 pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
-    let mut ctx = Ctx { out, err };
+    let mut ctx = Ctx {
+        out: Tracked {
+            inner: out,
+            failed: None,
+        },
+        err,
+    };
     let result = dispatch(&mut ctx, args);
-    let code = match result {
+    let mut code = match result {
         Ok(()) => 0,
         Err(CliError::Exit(code)) => code,
         Err(CliError::Core(e)) => {
@@ -196,6 +242,17 @@ pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
         }
     };
     let _ = ctx.out.flush();
+    if let Some(e) = ctx.out.failed.take() {
+        // A reader that went away (`| head`) needs no message; any other
+        // failure (ENOSPC, EIO) is reported. Either way the output is
+        // incomplete, so the exit code is never 0.
+        if e.kind() != std::io::ErrorKind::BrokenPipe {
+            let _ = writeln!(ctx.err, "error: writing output: {e}");
+        }
+        if code == 0 {
+            code = 1;
+        }
+    }
     let _ = ctx.err.flush();
     code
 }
@@ -355,7 +412,51 @@ pub fn load_read_only_op(
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-    use super::shell_word;
+    use super::{run, shell_word};
+
+    /// A stdout that fails every write with `kind`.
+    struct Broken(std::io::ErrorKind);
+    impl std::io::Write for Broken {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(self.0.into())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Review 2026-10-05: write errors and the final flush were ignored,
+    /// so `receipt create > /full/disk` exited 0 with the receipt lost.
+    #[test]
+    fn a_failed_write_is_never_exit_zero() {
+        let args = vec!["version".to_owned()];
+        let mut err = Vec::new();
+        let code = run(
+            &args,
+            &mut Broken(std::io::ErrorKind::StorageFull),
+            &mut err,
+        );
+        let err = String::from_utf8(err).unwrap();
+        assert_eq!(code, 1);
+        assert!(err.starts_with("error: writing output: "), "{err}");
+
+        // A reader that went away is not worth a message, but the output
+        // is still incomplete.
+        let mut err = Vec::new();
+        let code = run(&args, &mut Broken(std::io::ErrorKind::BrokenPipe), &mut err);
+        assert_eq!((code, err.as_slice()), (1, &b""[..]));
+
+        // A command's own failure keeps its code and message.
+        let mut err = Vec::new();
+        let bad = vec!["no-such-command".to_owned()];
+        let code = run(&bad, &mut Broken(std::io::ErrorKind::StorageFull), &mut err);
+        assert_eq!(code, 1);
+        assert!(
+            String::from_utf8(err)
+                .unwrap()
+                .starts_with("error: unknown command")
+        );
+    }
 
     /// Every quoted word must reach the program as exactly that one
     /// argument through a real bash: banners chosen by a scanned host end
