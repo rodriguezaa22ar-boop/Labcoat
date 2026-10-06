@@ -193,6 +193,15 @@ nmap tags each script with several categories, so the four accepted ones were no
 - Whenever scripts run, `--datadir <prefix>/share/nmap` is passed, worked out from the nmap binary the runner resolves (`/usr/bin/nmap` → `/usr/share/nmap`, Homebrew's `/opt/homebrew/bin/nmap` → `/opt/homebrew/share/nmap`). The run is refused if that directory has no `scripts/script.db`, or if it, `scripts/` or `script.db` is writable by group or others.
 - Operator-facing arguments are unchanged; the recorded argv shows the expression and the datadir.
 
+### One lock per command, checked after it is taken (review 2026-10-05)
+
+Quality bar item 3 says a mutating command holds the lock for its whole duration. Two places did not:
+
+- **`adapter run`** took the operation lock only inside `evidence add`, and every run of an adapter captured to the same `tmp/<adapter>-output.txt`. Two runs at once: one recorded the other's output as its evidence, with a matching hash, and the other failed. A run now holds the lock from preflight to `adapter.finished` (refusals included) and captures in its own `tmp/run-<pid>/` directory, so the stored file keeps its name. Other mutating commands in that operation wait for the scan, and `Lock::acquire` prints `note: waiting for another lcoat command to finish in <dir>` instead of appearing to hang. Any failure after `adapter.started` (the tool cannot be spawned, the capture cannot be written) now appends `adapter.finished status=error reason=spawn-failed|capture-failed`, so a start is never left open.
+- **Every writer** loaded and classified its operation before the lock was free, so a command that waited behind `op close` went on to write into the closed operation (seen: `artifact.created` after `op.closed`). `Operation<S>::lock()` now re-reads `STATUS` once the lock is held and refuses, before writing anything, when it no longer matches `S` (`State::STATUS`). Every writer takes that lock before its first write, so the typestate the compiler checked is also true at run time.
+
+Not changed: read-only commands take no lock (they never write), and the shell and Lite still lock only the ledger line they append.
+
 ### The ledger chain decides the verdict (review 2026-10-05)
 
 Until now the chain was shown but never consulted: an event edited before any packet existed was anchored by every packet written afterwards (each records the ledger's whole-file hash, so the edit became the verified record), and `op trust-chain --strict` printed `Trust Chain Status: current` and exited 0 above its own `Ledger Chain: broken` line. Fixed in two places, through one check (`packet::LedgerIntegrity`):
