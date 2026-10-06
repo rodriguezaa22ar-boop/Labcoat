@@ -28,6 +28,12 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 FAIL=0
 pass() { printf '  ok    %s\n' "$1"; }
+# sedi <script> <file>...: in-place sed for GNU and BSD (macOS) alike;
+# rewrites through the same inode, so the file keeps its 0600 mode.
+sedi() {
+  local script="$1" f; shift
+  for f in "$@"; do sed "$script" "$f" >"$f.sedi" && cat "$f.sedi" >"$f" && rm "$f.sedi"; done
+}
 fail() { printf '  FAIL  %s\n' "$1"; FAIL=1; }
 
 # expect <label> <needle> <<< output
@@ -114,9 +120,9 @@ lite_says "evidence verify also catches it" "Verification Status: attention-requ
 echo "case 2: edit the manifest and index to hide the artifact edit"
 root="$(fresh_root edit_manifest)"; export LCOAT_ROOT="$root"
 printf 'tampered\n' >>"$root/$ARTIFACT"
-new="$(sha256sum "$root/$ARTIFACT" | cut -d' ' -f1)"
+new="$("$BIN" hash "$root/$ARTIFACT" | cut -d' ' -f1)"
 old="$(grep -o '"sha256":"[0-9a-f]*"' "$root/sessions/demo/evidence/manifest.ndjson" | head -1 | cut -d'"' -f4)"
-sed -i "s/$old/$new/" "$root/sessions/demo/evidence/manifest.ndjson" "$root/sessions/demo/evidence.ndjson"
+sedi "s/$old/$new/" "$root/sessions/demo/evidence/manifest.ndjson" "$root/sessions/demo/evidence.ndjson"
 "$BIN" evidence verify demo 2>&1 | expect "evidence verify now agrees with the forged index" "Verification Status: verified"
 # ...but the manifest's hash is anchored in the closeout and archive packets.
 "$BIN" op verify demo 2>&1 | expect "op verify catches the manifest" "Evidence Manifest    changed"
@@ -137,7 +143,7 @@ echo "case 4: rewrite a ledger event in an operation that has no packets yet"
 root="$(fresh_root rewrite_event)"; export LCOAT_ROOT="$root"
 "$BIN" op resume demo >/dev/null
 # Before close there is no packet anchoring the ledger hash; only the chain can tell.
-sed -i '3s/"status":"ok"/"status":"edited"/' "$root/$LEDGER"
+sedi '3s/"status":"ok"/"status":"edited"/' "$root/$LEDGER"
 grep -q '"status":"edited"' "$root/$LEDGER" || { fail "tamper did not apply"; }
 "$BIN" ledger chain-verify demo 2>&1 | expect "chain-verify" "Chain Status: broken at event 3 (event_hash does not match event content)"
 expect_exit "chain-verify" 1 "$BIN" ledger chain-verify demo
@@ -149,7 +155,7 @@ lite_says "has no chain and accepts the rewritten ledger (the gap this build clo
 echo "case 4b: rewrite a ledger event, then try to package the operation"
 root="$(fresh_root rewrite_then_package)"; export LCOAT_ROOT="$root"
 "$BIN" op resume demo >/dev/null
-sed -i '3s/"status":"ok"/"status":"edited"/' "$root/$LEDGER"
+sedi '3s/"status":"ok"/"status":"edited"/' "$root/$LEDGER"
 "$BIN" op close --force >/dev/null
 # Every packet would anchor the edited ledger's whole-file hash, making the
 # edit part of the verified record; the writers refuse instead.
@@ -162,7 +168,7 @@ expect_exit "trust-chain --strict" 1 "$BIN" op trust-chain demo --strict
 echo "case 5: splice out a ledger event (prev_hash no longer matches)"
 root="$(fresh_root splice_event)"; export LCOAT_ROOT="$root"
 "$BIN" op resume demo >/dev/null
-sed -i '3d' "$root/$LEDGER"
+sedi '3d' "$root/$LEDGER"
 "$BIN" ledger chain-verify demo 2>&1 | expect "chain-verify" "Chain Status: broken at event 3 (prev_hash does not match previous event_hash)"
 expect_exit "chain-verify" 1 "$BIN" ledger chain-verify demo
 
@@ -170,7 +176,7 @@ echo "case 6: truncate the ledger tail (documented limit: needs a checkpoint)"
 root="$(fresh_root truncate_tail)"; export LCOAT_ROOT="$root"
 "$BIN" op resume demo >/dev/null
 before="$("$BIN" ledger checkpoint "$root/$LEDGER" | awk '/^head_event_hash:/{print $2}')"
-sed -i '$d' "$root/$LEDGER"
+sedi '$d' "$root/$LEDGER"
 # A hash chain cannot see its own tail removed; the chain still verifies.
 "$BIN" ledger chain-verify demo 2>&1 | expect "chain-verify alone cannot see truncation" "Chain Status: verified"
 after="$("$BIN" ledger checkpoint "$root/$LEDGER" | awk '/^head_event_hash:/{print $2}')"

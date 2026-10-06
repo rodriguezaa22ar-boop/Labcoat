@@ -40,6 +40,26 @@ jobs:
         with:
           command: check
 
+  platforms:
+    # The operator scans from a Mac and from ARM boards, not only x86 Linux:
+    # run the same tests there (release-builds only proves they compile).
+    name: tests on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - run: cargo test --workspace --locked
+      - run: cargo test --workspace --locked --no-default-features
+      - run: cargo test --workspace --locked --features lcoat/test-support
+      - run: conformance/tamper_rust.sh target/debug/lcoat
+
   msrv:
     name: tests on MSRV (1.89)
     runs-on: ubuntu-latest
