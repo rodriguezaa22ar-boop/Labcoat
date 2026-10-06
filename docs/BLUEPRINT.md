@@ -193,6 +193,15 @@ This also closed a quiet gap: the trust chain used to take any recorded review p
 - Any other host in the arguments is refused: an IP address or network anywhere in an argument (including inside `sh -c '...'` strings and `--resolve x:80:1.2.3.4`), a `scheme://host` URL, or `user@host.domain`. Bare words that might be DNS names are not judged; THREAT_MODEL.md says so.
 - When the adapter refuses to build a command after an allowed preflight, the runner records `adapter.refused` (`reason=command-refused`), so the ledger never shows an allowed preflight that led nowhere.
 
+### One lock per command, checked after it is taken (review 2026-10-05)
+
+Quality bar item 3 says a mutating command holds the lock for its whole duration. Two places did not:
+
+- **`adapter run`** took the operation lock only inside `evidence add`, and every run of an adapter captured to the same `tmp/<adapter>-output.txt`. Two runs at once: one recorded the other's output as its evidence, with a matching hash, and the other failed. A run now holds the lock from preflight to `adapter.finished` (refusals included) and captures in its own `tmp/run-<pid>/` directory, so the stored file keeps its name. Other mutating commands in that operation wait for the scan, and `Lock::acquire` prints `note: waiting for another lcoat command to finish in <dir>` instead of appearing to hang. Any failure after `adapter.started` (the tool cannot be spawned, the capture cannot be written) now appends `adapter.finished status=error reason=spawn-failed|capture-failed`, so a start is never left open.
+- **Every writer** loaded and classified its operation before the lock was free, so a command that waited behind `op close` went on to write into the closed operation (seen: `artifact.created` after `op.closed`). `Operation<S>::lock()` now re-reads `STATUS` once the lock is held and refuses, before writing anything, when it no longer matches `S` (`State::STATUS`). Every writer takes that lock before its first write, so the typestate the compiler checked is also true at run time.
+
+Not changed: read-only commands take no lock (they never write), and the shell and Lite still lock only the ledger line they append.
+
 ### The ledger chain decides the verdict (review 2026-10-05)
 
 Until now the chain was shown but never consulted: an event edited before any packet existed was anchored by every packet written afterwards (each records the ledger's whole-file hash, so the edit became the verified record), and `op trust-chain --strict` printed `Trust Chain Status: current` and exited 0 above its own `Ledger Chain: broken` line. Fixed in two places, through one check (`packet::LedgerIntegrity`):

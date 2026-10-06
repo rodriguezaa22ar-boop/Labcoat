@@ -38,7 +38,20 @@ impl Lock {
             opts.mode(0o600);
         }
         let file = opts.open(&path)?;
-        file.lock()?;
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                // A mutating command (often an adapter run, which holds the
+                // lock for the whole scan) is running here; say so rather
+                // than appear to hang.
+                eprintln!(
+                    "note: waiting for another lcoat command to finish in {}",
+                    dir.display()
+                );
+                file.lock()?;
+            }
+            Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
+        }
         Ok(Self { _file: file, path })
     }
 
