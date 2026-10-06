@@ -1085,6 +1085,7 @@ fn concurrent_adapter_runs_keep_their_own_evidence() {
                 "adapter", "run", "script", "box", "--tier", "1", "--", "/bin/sh", "-c",
             ])
             .arg(format!("sleep 1; echo {word}"))
+            .arg("{target}")
             .env_remove("LAB_ROOT")
             .env("LCOAT_ROOT", &root)
             .env("LCOAT_OPERATOR", "tester")
@@ -1172,6 +1173,7 @@ fn a_run_that_cannot_start_is_still_finished_in_the_ledger() {
             "1",
             "--",
             tool.to_str().unwrap(),
+            "{target}",
         ],
     ));
     let ledger = std::fs::read_to_string(root.join("sessions/demo/ledger.ndjson")).unwrap();
