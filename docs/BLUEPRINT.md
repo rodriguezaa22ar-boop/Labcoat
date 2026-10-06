@@ -272,6 +272,8 @@ Every Lite command keeps its name, arguments and output. New: `finding resolve /
 
 Two deliberate behaviour changes: an unset lab root is an error; a missing `<target>` is reported before any argument is read.
 
+Output is checked once, at exit (review 2026-10-05): if any write to stdout or the final flush fails, the command exits 1 with `error: writing output: <reason>` on stderr (silently, still 1, when the reader closed the pipe), so `receipt create > /full/disk` no longer exits 0 with the receipt lost. Warnings (`warning: …` from `adapter run` and `evidence diff`) go to stderr, so a script reading stdout never parses one as data.
+
 ## Dependencies, toolchain and supply chain
 
 **Default: the library crates use the standard library only, as Lite used Go's.** Lite's zero-dependency supply chain was a strength, and the environment this scaffold was built in has no crates.io access, so anything built on external crates could not have been compiled before hand-over. The formats are small and ours; std has file locking (1.89); SHA-256 and strict JSON are about 200 lines each with exact test vectors. Phase 0 shipped them and they reproduce every golden hash.

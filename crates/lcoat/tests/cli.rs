@@ -310,3 +310,14 @@ fn receipt_create_writes_the_shell_form_and_validates() {
     assert!(stdout(&out).starts_with("receipt: ok\n"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The real binary against a full disk: stdout to `/dev/full` (Linux).
+#[cfg(target_os = "linux")]
+#[test]
+fn output_to_a_full_disk_fails() {
+    let full = std::fs::File::create("/dev/full").unwrap();
+    let out = lcoat().arg("version").stdout(full).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.starts_with("error: writing output: "), "{err}");
+}
