@@ -407,8 +407,7 @@ mod tests {
 
     #[test]
     fn rows_sort_newest_first_and_verify_catches_edits() {
-        let dir = std::env::temp_dir().join(format!("lcoat-ev-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = lcoat_format::fsutil::private_temp_dir("lcoat-ev").unwrap();
         std::fs::create_dir_all(dir.join("evidence/ev_1")).unwrap();
         std::fs::write(dir.join("evidence/ev_1/a.txt"), b"hello\n").unwrap();
         let sum = Sha256Hex::of_bytes(b"hello\n");

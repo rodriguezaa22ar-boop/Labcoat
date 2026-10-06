@@ -723,8 +723,7 @@ mod tests {
 
     #[test]
     fn walk_finds_symlinks_and_interrupted_writes_without_following_links() {
-        let dir = std::env::temp_dir().join(format!("lcoat-doctor-walk-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = lcoat_format::fsutil::private_temp_dir("lcoat-doctor-walk").unwrap();
         std::fs::create_dir_all(dir.join("sessions/op")).unwrap();
         std::fs::write(dir.join("sessions/op/.session.env.123.tmp"), b"x").unwrap();
         std::fs::write(dir.join("sessions/op/session.env"), b"x").unwrap();

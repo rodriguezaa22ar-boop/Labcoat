@@ -188,9 +188,7 @@ mod tests {
 
     #[test]
     fn pending_and_report() {
-        let dir = std::env::temp_dir().join(format!("lcoat-val-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = lcoat_format::fsutil::private_temp_dir("lcoat-val").unwrap();
         assert_eq!(
             report_markdown(&dir).unwrap(),
             ["- No validation plans recorded yet."]

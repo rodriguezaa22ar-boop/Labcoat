@@ -459,8 +459,13 @@ struct Template {
     files: Vec<(PathBuf, Vec<u8>)>,
 }
 
+/// One private scratch directory per process, created on first use.
 fn scratch_base() -> PathBuf {
-    std::env::temp_dir().join(format!("lcoat-fuzz-{}", std::process::id()))
+    static BASE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    BASE.get_or_init(|| {
+        lcoat_format::fsutil::private_temp_dir("lcoat-fuzz").expect("fuzz scratch dir")
+    })
+    .clone()
 }
 
 fn build_template() -> Template {

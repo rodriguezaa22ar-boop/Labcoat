@@ -600,9 +600,7 @@ mod tests {
             (1, 1, 0)
         );
 
-        let dir = std::env::temp_dir().join(format!("lcoat-receipt-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = lcoat_format::fsutil::private_temp_dir("lcoat-receipt").unwrap();
         let p1 = dir.join("1.json");
         let p2f = dir.join("2.json");
         std::fs::write(&p1, &first).unwrap();

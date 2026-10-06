@@ -92,6 +92,9 @@ impl Drop for Input {
     fn drop(&mut self) {
         if self.temp {
             let _ = std::fs::remove_file(&self.path);
+            if let Some(dir) = self.path.parent() {
+                let _ = std::fs::remove_dir(dir);
+            }
         }
     }
 }
@@ -111,12 +114,13 @@ fn input(args: &[String], usage: &str) -> std::result::Result<(Input, bool), Cli
     if first == "-" {
         let mut buf = Vec::new();
         std::io::Read::read_to_end(&mut std::io::stdin(), &mut buf)?;
-        let path = std::env::temp_dir().join(format!(
-            "lcoat-ledger-{}-{}",
-            std::process::id(),
-            clock::Utc::now().unix()
-        ));
-        lcoat_format::envfile::write_private(&path, &buf)?;
+        // A fresh private directory, not a guessable name in /tmp.
+        let dir = lcoat_format::fsutil::private_temp_dir("lcoat-ledger")?;
+        let path = dir.join("ledger.ndjson");
+        if let Err(e) = lcoat_format::envfile::write_private(&path, &buf) {
+            let _ = std::fs::remove_dir(&dir);
+            return Err(e.into());
+        }
         return Ok((Input { path, temp: true }, json));
     }
     if !lcoat_core::root::file_exists(Path::new(first)) {

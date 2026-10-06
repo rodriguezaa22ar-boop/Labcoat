@@ -402,9 +402,7 @@ mod tests {
     use super::*;
 
     fn tmp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("lcoat-ledger-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        d
+        lcoat_format::fsutil::private_temp_dir(&format!("lcoat-ledger-{name}")).unwrap()
     }
 
     #[test]

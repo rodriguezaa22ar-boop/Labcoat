@@ -231,9 +231,7 @@ mod tests {
 
     #[test]
     fn current_follows_the_latest_record_and_the_clock() {
-        let dir = std::env::temp_dir().join(format!("lcoat-approval-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = lcoat_format::fsutil::private_temp_dir("lcoat-approval").unwrap();
         let p = file(&dir);
         assert!(!current(
             &dir,

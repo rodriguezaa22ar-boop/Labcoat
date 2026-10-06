@@ -625,9 +625,7 @@ mod tests {
 
     #[test]
     fn snapshot_round_trip_and_fallbacks() {
-        let dir = std::env::temp_dir().join(format!("lcoat-scope-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = lcoat_format::fsutil::private_temp_dir("lcoat-scope").unwrap();
         let fb = TargetInfo {
             target: "t".into(),
             address: "a".into(),

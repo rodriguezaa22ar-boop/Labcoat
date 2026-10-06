@@ -136,9 +136,7 @@ fn unset_root_is_an_error_not_a_guess() {
 
 #[test]
 fn read_only_commands_never_create_directories() {
-    let root = std::env::temp_dir().join(format!("lcoat-cli-empty-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
+    let root = lcoat_format::fsutil::private_temp_dir("lcoat-cli-empty").unwrap();
     for args in [
         &["op", "list"][..],
         &["op", "readiness"],
@@ -266,9 +264,7 @@ fn ledger_and_receipt_commands_match_the_shell_build() {
 
 #[test]
 fn receipt_create_writes_the_shell_form_and_validates() {
-    let dir = std::env::temp_dir().join(format!("lcoat-cli-receipt-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = lcoat_format::fsutil::private_temp_dir("lcoat-cli-receipt").unwrap();
     let out_path = dir.join("r.json").display().to_string();
     let out = lcoat()
         .args([
