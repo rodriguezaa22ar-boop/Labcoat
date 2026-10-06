@@ -358,7 +358,7 @@ fn a_dns_name_is_resolved_once_and_recorded() {
             &RunParams {
                 adapter: "script".into(),
                 target: String::new(),
-                args: args(&["--tier", "1", "--", "/bin/true"]),
+                args: args(&["--tier", "1", "--", "/bin/echo"]),
                 timeout: None,
             },
         );
