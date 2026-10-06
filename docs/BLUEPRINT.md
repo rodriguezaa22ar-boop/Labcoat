@@ -185,6 +185,14 @@ Everything above except the last clause is done and checked by `conformance/cros
 Twice in the field a `<placeholder>` in a pasted command became a shell redirect (one of them let `op start` run on an undeclared target). Commands that create something now end with `next: lcoat ...` lines carrying the real ids, quoted for bash and zsh (`'...'` with `'\''`; plain words bare): `target add` (start an operation, or a note that a non-in-scope target will not be contacted), `finding add` (resolve or accept that finding), `op close` (closeout by name), and `adapter run`, which prints one ready-to-run `finding add` per proposed finding with this run's evidence id. Titles there come from service banners chosen by the scanned host, so the quoting is tested through a real bash with command substitution, backticks, quotes and globs, and a printed line is executed in the CLI tests. `op status` gains an `Adapter Runs:` line when there are any (the shell's `Recon Runs` counts a different feature and stays as it is, so shell-written operations print byte-identically).
 
 This also closed a quiet gap: the trust chain used to take any recorded review packet as verified without reading it (inherited from Lite). It now verifies the latest one, so a changed finding index after the review shows `Accepted Risk Review Packet: attention-required`.
+### The frozen clock is a test fixture (review 2026-10-05)
+
+`LCOAT_NOW` (and the shell's `ATLAS_TODAY`) froze the clock in every build, release binaries included, and was not documented for operators. A stale export left over from a conformance run makes an expired Tier 3 grant current again and stamps every record with the wrong time.
+
+- Both are honoured only by debug builds (`clock::FROZEN_CLOCK_ALLOWED = cfg!(debug_assertions)`): `cargo test` and the conformance harnesses, which all use `target/debug/lcoat`. Release binaries (CI's static builds, anything an operator runs in the field) always use the system clock.
+- A release binary that sees either variable set prints `warning: LCOAT_NOW is ignored: release builds always use the system clock` on stderr, so a stale export is visible rather than silently obeyed or silently dropped. `lcoat doctor` also warns when either is set.
+- A deliberate divergence from the shell, which honours `ATLAS_TODAY` everywhere. The conformance scenario runs debug builds and is unchanged.
+
 ### Fuzzing (after phase 2)
 
 Thirteen targets, each a function in `crates/lcoat-fuzz/src/targets.rs` that feeds bytes to a parser the way the binary does and asserts what makes the parser safe to trust, not only that it does not panic:
