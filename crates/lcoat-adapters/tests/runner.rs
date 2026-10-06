@@ -334,3 +334,66 @@ fn only_declared_in_scope_targets_are_contacted() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Review 2026-10-05: a DNS name was resolved by the vantage probe and
+/// again by the tool, so the trail could name one address while the scan
+/// hit another. The runner now resolves once and records the IP; a name
+/// that does not resolve is refused before anything runs.
+#[test]
+fn a_dns_name_is_resolved_once_and_recorded() {
+    for (target, resolves) in [("localhost", true), ("no-such-host.invalid", false)] {
+        let (root, dir) = fresh(&format!("dns-{resolves}"));
+        declare(&root, target, "in-scope");
+        let (op, _) = Operation::start(
+            &root,
+            &StartParams {
+                name: "dns".into(),
+                target: target.into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let result = run(
+            &op,
+            &RunParams {
+                adapter: "script".into(),
+                target: String::new(),
+                args: args(&["--tier", "1", "--", "/bin/true"]),
+                timeout: None,
+            },
+        );
+        let events = ledger::read(&op.dir).unwrap();
+        let started: Vec<_> = events
+            .iter()
+            .filter(|e| e.event == "adapter.started")
+            .collect();
+        if resolves {
+            result.unwrap();
+            assert!(
+                started[0]
+                    .detail
+                    .contains(" target=localhost resolved=127."),
+                "{}",
+                started[0].detail
+            );
+        } else {
+            let e = result.unwrap_err().to_string();
+            assert!(
+                e.contains("does not resolve") || e.contains("no IPv4 address"),
+                "{e}"
+            );
+            let last = events.last().unwrap();
+            assert_eq!(
+                (last.event.as_str(), last.status.as_str()),
+                ("adapter.refused", "denied")
+            );
+            assert!(
+                last.detail.ends_with("reason=unresolved"),
+                "{}",
+                last.detail
+            );
+            assert!(started.is_empty(), "nothing ran for an unresolved name");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

@@ -64,6 +64,11 @@ pub trait Adapter {
     /// Parse the operator's arguments and classify the invocation. Unknown
     /// input must fail here rather than classify low.
     fn classify(&self, args: &[String]) -> Result<Tier>;
+    /// Whether these arguments scan over IPv6, so a DNS name is pinned to
+    /// an IPv6 address rather than an IPv4 one.
+    fn ipv6(&self, _args: &[String]) -> bool {
+        false
+    }
     /// The argv to execute for `target`. Never passed to a shell.
     fn command(&self, target: &ScopedTarget, args: &[String]) -> Result<Vec<String>>;
     /// Findings proposed from captured stdout; empty when not parsed.
