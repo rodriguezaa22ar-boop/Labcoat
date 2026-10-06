@@ -18,7 +18,7 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
 use lcoat_format::clock;
-use lcoat_format::envfile::{Record, upsert_file};
+use lcoat_format::envfile::{Record, upsert_many_file};
 use lcoat_format::fsutil::{file_exists, mkdir_private};
 use lcoat_format::ids::{is_safe_slug, slugify};
 
@@ -810,8 +810,10 @@ impl Operation<Active> {
     /// detail it computed (see [`crate::readiness::State::ledger_detail`]).
     pub fn close(self, readiness_status: &str, detail: &str) -> Result<Operation<Closed>> {
         let _lock = self.lock()?;
-        upsert_file(&self.file, "STATUS", "closed")?;
-        upsert_file(&self.file, "CLOSED_AT", &clock::timestamp())?;
+        upsert_many_file(
+            &self.file,
+            &[("STATUS", "closed"), ("CLOSED_AT", &clock::timestamp())],
+        )?;
         crate::crash::point("close.status");
         self.append_ledger(
             "op.close.readiness",
@@ -842,13 +844,14 @@ impl Operation<Closed> {
     /// `cmd_op_resume`: reopen, set active, append `op.resumed`.
     pub fn resume(self) -> Result<Operation<Active>> {
         let _lock = self.lock()?;
-        for (k, v) in [
-            ("STATUS", "active"),
-            ("LAST_RESUMED_AT", clock::timestamp().as_str()),
-            ("CLOSED_AT", ""),
-        ] {
-            upsert_file(&self.file, k, v)?;
-        }
+        upsert_many_file(
+            &self.file,
+            &[
+                ("STATUS", "active"),
+                ("LAST_RESUMED_AT", clock::timestamp().as_str()),
+                ("CLOSED_AT", ""),
+            ],
+        )?;
         {
             let _state_lock = Lock::acquire(&self.root.atlas_state)?;
             set_active(&self.root, &self.slug)?;
@@ -872,13 +875,14 @@ pub fn resume(root: &LabRoot, name: &str) -> Result<Operation<Active>> {
         Loaded::Closed(o) => o.resume(),
         Loaded::Active(o) => {
             let _lock = o.lock()?;
-            for (k, v) in [
-                ("STATUS", "active"),
-                ("LAST_RESUMED_AT", clock::timestamp().as_str()),
-                ("CLOSED_AT", ""),
-            ] {
-                upsert_file(&o.file, k, v)?;
-            }
+            upsert_many_file(
+                &o.file,
+                &[
+                    ("STATUS", "active"),
+                    ("LAST_RESUMED_AT", clock::timestamp().as_str()),
+                    ("CLOSED_AT", ""),
+                ],
+            )?;
             {
                 let _state_lock = Lock::acquire(&o.root.atlas_state)?;
                 set_active(&o.root, &o.slug)?;
