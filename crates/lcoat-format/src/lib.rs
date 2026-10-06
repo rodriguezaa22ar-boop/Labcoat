@@ -16,7 +16,7 @@
 //! | [`hash`] | 0 | done: `Sha256Hex`; reproduces the golden ledger hash |
 //! | [`envfile`] | 1 | done: bash `printf %q` quoting round trip |
 //! | [`ndjson`] | 1 | done: line reader, latest-per-id, append |
-//! | [`clock`] | 1 | done: RFC 3339 UTC, `LCOAT_NOW` frozen clock |
+//! | [`clock`] | 1 | done: RFC 3339 UTC, `LCOAT_NOW` frozen clock (debug builds only) |
 //! | [`ids`] | 1 | done: slugify, second-resolution IDs with `_02` suffixes |
 //! | [`fsutil`] | 2 | done: atomic 0600 writes, locked appends, private dirs |
 
