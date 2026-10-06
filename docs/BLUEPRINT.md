@@ -144,7 +144,7 @@ Atomic writes (temp file in the same directory, `fsync`, rename) apply to every 
 - No shell. `std::process::Command` with argv, environment cleared to `PATH` and locale, stdin closed, working directory the run's temp dir.
 - Output is captured to `evidence/<id>/` as a file and hashed; nothing from it enters a ledger detail or packet except counts and the hash. The nmap XML parser produces metadata (open ports, service names) for the report and finding suggestions; the parser is fuzzed.
 - Vantage is recorded on every run: hostname and the source address `nmap` reports (or the default route address when a tool reports none), as `vantage=` tokens on `adapter.started` and fields on the evidence record. A scan of astra from astra and a scan from the Mac over Tailscale become distinguishable in the trail.
-- Tier is a property of the adapter and the arguments, not a flag the operator sets: `nmap -sn` is Tier 1, `-sV` is Tier 2, anything that parses to a NSE category outside `safe`/`default`/`discovery`/`version` does not parse at all.
+- Tier is a property of the adapter and the arguments, not a flag the operator sets: `nmap -sn` is Tier 1, `-sV` is Tier 2, anything that parses to a NSE category outside `safe`/`default`/`discovery`/`version` does not parse at all, and the accepted ones are sent with the risky categories subtracted (see the 2026-10-05 note below).
 
 ### Format 1.1 details fixed now
 
@@ -196,6 +196,14 @@ A capture is recorded three times: the index (`evidence.ndjson`), the format 1.1
 | `unsafe` | the stored path is absolute or has a `..` component; it is not opened |
 
 Shell- and Lite-written operations have no manifest; their ledger still names every capture, so the check applies to them too, and a clean operation prints exactly as before (`readonly_diff.sh` unchanged). The trust chain uses the same function. `tamper_rust.sh` case 2 (manifest and index forged together) is now also caught by `evidence verify`, through the ledger; case 3b empties the index. Still a limit: someone who edits the artifact, the index, the manifest and the ledger event and recomputes the chain from there is caught only by packets written earlier or a recorded checkpoint.
+
+### NSE scripts: subtract the risky categories, read nmap's own scripts (review 2026-10-05)
+
+nmap tags each script with several categories, so the four accepted ones were not the boundary they looked like. In nmap 7.94, `--script safe` selects 347 scripts and 113 of them are also `broadcast` (they probe the whole LAN, not the scoped host), `external` (whois, ASN and geolocation lookups to third parties), `auth` (e.g. `http-default-accounts` tries default credentials), `intrusive` or `vuln`. `-sC` and `-A` run the `default` set, which includes `auth`, `external` and `vuln` scripts too. And nmap reads `script.db` from `~/.nmap/scripts` before its own (it finds the home directory even with the environment scrubbed), so a planted script tagged `safe` ran. Both were reproduced here.
+
+- Every script selection becomes one expression: `(<categories>) and not (intrusive or broadcast or external or auth or brute or vuln or exploit or dos or malware)`. `-sC` adds `default` to it; `-A` is spelled out as `-O -sV --traceroute` plus `default`, so nothing reaches nmap unfiltered. On 7.94 `safe` drops from 347 scripts to 231.
+- Whenever scripts run, `--datadir <prefix>/share/nmap` is passed, worked out from the nmap binary the runner resolves (`/usr/bin/nmap` → `/usr/share/nmap`, Homebrew's `/opt/homebrew/bin/nmap` → `/opt/homebrew/share/nmap`). The run is refused if that directory has no `scripts/script.db`, or if it, `scripts/` or `script.db` is writable by group or others.
+- Operator-facing arguments are unchanged; the recorded argv shows the expression and the datadir.
 
 ### One lock per command, checked after it is taken (review 2026-10-05)
 
