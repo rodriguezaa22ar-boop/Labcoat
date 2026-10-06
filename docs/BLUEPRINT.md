@@ -278,7 +278,7 @@ Two deliberate behaviour changes: an unset lab root is an error; a missing `<tar
 
 Fallback list if a hand-written piece proves costly (adopt with a one-line reason; `cargo deny` keeps the allowlist): `serde`/`serde_json`, `sha2`/`hex`, `regex`, `clap`, `time`, `rustix`, `ed25519-dalek` (phase 4); dev: `proptest`, `assert_cmd`, `trybuild`, `cargo-fuzz`. `#![forbid(unsafe_code)]` everywhere regardless.
 
-- **Toolchain:** stable Rust, MSRV 1.89, edition 2024, `rust-toolchain.toml`. CI: fmt, clippy `-D warnings`, tests with and without adapters, cargo-deny, MSRV build.
+- **Toolchain:** stable Rust, MSRV 1.89, edition 2024, `rust-toolchain.toml`. CI: fmt, clippy `-D warnings` (with and without adapters), tests in all three feature sets, `tamper_rust.sh`, cargo-deny, the test suite on the MSRV itself (`cargo +1.89`, because `rust-toolchain.toml` would otherwise select stable), and the three-way `conformance/cross_check.sh` against the shell build at `23ba2d2` and Lite `v0.1.4`, whose pins the script asserts. Actions are pinned to commit SHAs and updated by Dependabot.
 - **Builds:** static `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `aarch64-apple-darwin`; `--locked`, stripped, `SHA256SUMS` per release.
 - **Nix: dropped for this repo.** An asset for the shell build (exact `bash`/`jq`/coreutils); with zero dependencies and a pinned toolchain Cargo is already reproducible, so Nix would add a contributor requirement without adding assurance. May return in phase 4 for bit-for-bit reproducible release binaries (linker and libc pinning), a build-server concern.
 

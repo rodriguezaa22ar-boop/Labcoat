@@ -1,0 +1,8 @@
+# Actions are pinned to commit SHAs; Dependabot proposes the updates.
+# Cargo has no dependencies to update (zero-dependency workspace).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

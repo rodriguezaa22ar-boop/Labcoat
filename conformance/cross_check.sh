@@ -15,12 +15,31 @@
 #   ATLAS_REPO=/path/to/atlas-trust-infrastructure \
 #   GO_PROJECT=/path/to/GO-project \
 #   conformance/cross_check.sh
+#
+# Refuses to run unless ATLAS_REPO is at 23ba2d2 and GO_PROJECT's code is
+# v0.1.4 (Markdown may differ). CI runs this on every push (`conformance` job).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ATLAS_REPO="${ATLAS_REPO:?set ATLAS_REPO to the atlas-trust-infrastructure checkout (pinned 23ba2d2)}"
 GO_PROJECT="${GO_PROJECT:?set GO_PROJECT to the GO-project checkout (Lite v0.1.4)}"
 export LCOAT_NOW="${LCOAT_NOW:-2026-10-02T07:40:00Z}"
+
+# The pins every result here is relative to. A different oracle or Lite
+# would make agreement meaningless, so refuse rather than compare.
+ATLAS_PIN=23ba2d2
+LITE_PIN=v0.1.4
+if [ "${LCOAT_CONFORMANCE_UNPINNED:-}" != 1 ]; then
+  atlas_head="$(git -C "$ATLAS_REPO" rev-parse HEAD)"
+  case "$atlas_head" in
+    "$ATLAS_PIN"*) ;;
+    *) echo "error: ATLAS_REPO is at ${atlas_head:0:7}, not the pinned $ATLAS_PIN (set LCOAT_CONFORMANCE_UNPINNED=1 to compare anyway)" >&2; exit 2 ;;
+  esac
+  if ! git -C "$GO_PROJECT" diff --quiet "$LITE_PIN" -- . ':(exclude)*.md' ||
+     [ -n "$(git -C "$GO_PROJECT" ls-files --others --exclude-standard -- . ':(exclude)*.md')" ]; then
+    echo "error: GO_PROJECT code differs from the pinned $LITE_PIN (set LCOAT_CONFORMANCE_UNPINNED=1 to compare anyway)" >&2; exit 2
+  fi
+fi
 
 fail=0
 notyet=0
