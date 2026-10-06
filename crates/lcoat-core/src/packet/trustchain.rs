@@ -10,6 +10,7 @@ use crate::operation::{Operation, State as OpState};
 use crate::readiness::{self, State};
 use crate::root::file_exists;
 
+use super::LedgerIntegrity;
 use super::verify::{archive_verify, audit_verify, closeout_verify};
 
 /// The metadata-chain state of an operation.
@@ -35,6 +36,10 @@ pub struct TrustChain {
     pub evidence_verification: &'static str,
     pub evidence_checked: usize,
     pub evidence_problems: usize,
+    /// The ledger's own chain. A broken chain, or a missing or unreadable
+    /// ledger, makes the whole chain `attention-required` whatever the
+    /// packets say: they anchor the ledger as it was when they were written.
+    pub ledger: LedgerIntegrity,
 }
 
 /// The next step when the chain is current.
@@ -202,7 +207,18 @@ pub fn collect_trust_chain<S: OpState>(op: &Operation<S>) -> Result<TrustChain> 
         "verified"
     };
 
-    let (status, next_step) = if evidence_problems > 0 {
+    let ledger = LedgerIntegrity::of(op);
+
+    let (status, next_step) = if !ledger.is_sound() {
+        (
+            "attention-required",
+            format!(
+                "The ledger cannot be trusted: {}; run 'lcoat ledger chain-verify {}' and investigate before trusting this operation.",
+                ledger.problem(),
+                op.slug
+            ),
+        )
+    } else if evidence_problems > 0 {
         (
             "attention-required",
             "Evidence artifacts changed or missing since capture; run 'lcoat evidence verify' and investigate before trusting this operation."
@@ -244,6 +260,7 @@ pub fn collect_trust_chain<S: OpState>(op: &Operation<S>) -> Result<TrustChain> 
         evidence_verification,
         evidence_checked: checks.len(),
         evidence_problems,
+        ledger,
     })
 }
 
