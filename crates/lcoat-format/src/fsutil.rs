@@ -12,8 +12,11 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-/// `mkdir -p` with mode 0700 on every created directory.
+/// `mkdir -p` with mode 0700 on every created directory. Each directory
+/// it creates is made durable (its parent's entry synced), so a crash
+/// cannot lose a directory a later write already put files in.
 pub fn mkdir_private(path: &Path) -> io::Result<()> {
+    let missing: Vec<&Path> = path.ancestors().take_while(|a| !a.exists()).collect();
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
@@ -21,7 +24,24 @@ pub fn mkdir_private(path: &Path) -> io::Result<()> {
         use std::os::unix::fs::DirBuilderExt;
         builder.mode(0o700);
     }
-    builder.create(path)
+    builder.create(path)?;
+    for created in missing.iter().rev() {
+        sync_parent(created);
+    }
+    Ok(())
+}
+
+/// Sync the directory holding `path`, so a newly created or renamed entry
+/// survives a crash. Best effort: some filesystems refuse to sync a
+/// directory, and the data itself was already synced.
+fn sync_parent(path: &Path) {
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    if let Ok(d) = File::open(dir) {
+        let _ = d.sync_all();
+    }
 }
 
 /// Whether `path` is an existing regular file.
@@ -76,14 +96,31 @@ pub fn write_private(path: &Path, data: &[u8]) -> io::Result<()> {
 /// file 0600. The write is a single `write_all` followed by `sync_data`, so
 /// a crash leaves either the whole line or nothing (for lines under the
 /// filesystem's atomic append size, which every record here is).
+///
+/// The lock is not optional: if the filesystem cannot take it (some network
+/// mounts), nothing is appended (review 2026-10-05: the append carried on
+/// unlocked, so two writers could interleave).
 pub fn append_locked(path: &Path, line: &[u8]) -> io::Result<()> {
+    let created = !path.exists();
     let mut f = open_private(path, OpenOptions::new().append(true).create(true))?;
-    let locked = f.lock().is_ok();
-    let written = f.write_all(line).and_then(|()| f.sync_data());
-    if locked {
-        let _ = f.unlock();
+    if created {
+        sync_parent(path);
     }
+    f.lock().map_err(|e| lock_error(path, &e))?;
+    let written = f.write_all(line).and_then(|()| f.sync_data());
+    let _ = f.unlock();
     written
+}
+
+/// The refusal for a file that cannot be locked.
+pub fn lock_error(path: &Path, e: &io::Error) -> io::Error {
+    io::Error::new(
+        e.kind(),
+        format!(
+            "cannot lock {} ({e}); refusing to write without the lock. The lab root may be on a filesystem without advisory locks (some NFS or FUSE mounts): put LCOAT_ROOT on a local filesystem",
+            path.display()
+        ),
+    )
 }
 
 /// Copy `src` to `dst` (which must not exist) with mode 0600, streaming,
@@ -94,6 +131,7 @@ pub fn copy_private_new(src: &Path, dst: &Path) -> io::Result<u64> {
     let mut out = open_private(dst, OpenOptions::new().write(true).create_new(true))?;
     let n = io::copy(&mut input, &mut out)?;
     out.sync_all()?;
+    sync_parent(dst);
     Ok(n)
 }
 
@@ -106,6 +144,21 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         mkdir_private(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn mkdir_private_creates_every_level_0700() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tmpdir("mkdir");
+        let deep = d.join("a/b/c");
+        mkdir_private(&deep).unwrap();
+        for p in [d.join("a"), d.join("a/b"), deep.clone()] {
+            assert_eq!(
+                fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+        mkdir_private(&deep).unwrap();
     }
 
     #[test]

@@ -84,12 +84,21 @@ pub fn write_private(path: &Path, data: &[u8]) -> io::Result<()> {
 
 /// Load `path` (or start empty when it does not exist), upsert, write back.
 pub fn upsert_file(path: &Path, key: &str, value: &str) -> Result<(), EnvError> {
+    upsert_many_file(path, &[(key, value)])
+}
+
+/// [`upsert_file`] for several keys in one atomic write, so a reader (or a
+/// crash) never sees some of them changed and the rest not (review
+/// 2026-10-05: `op close` wrote `STATUS` and `CLOSED_AT` as two writes).
+pub fn upsert_many_file(path: &Path, pairs: &[(&str, &str)]) -> Result<(), EnvError> {
     let mut rec = match Record::load(path) {
         Ok(r) => r,
         Err(EnvError::Io(e)) if e.kind() == io::ErrorKind::NotFound => Record::new(),
         Err(e) => return Err(e),
     };
-    rec.upsert(key, value);
+    for &(k, v) in pairs {
+        rec.upsert(k, v);
+    }
     rec.save(path).map_err(EnvError::Io)
 }
 
@@ -367,6 +376,33 @@ mod tests {
         let rec =
             parse(format!("K={q}\n").as_bytes()).unwrap_or_else(|e| panic!("{v:?} -> {q}: {e}"));
         assert_eq!(rec.get("K"), v, "quoted as {q}");
+    }
+
+    #[test]
+    fn upsert_many_writes_every_key_in_one_replace() {
+        let dir = std::env::temp_dir().join(format!("lcoat-env-many-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        crate::fsutil::mkdir_private(&dir).unwrap();
+        let p = dir.join("session.env");
+        std::fs::write(&p, b"NAME=x\nSTATUS=active\nCLOSED_AT=''\n").unwrap();
+        let ino = |p: &Path| {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(p).unwrap().ino()
+        };
+        let before = ino(&p);
+        upsert_many_file(
+            &p,
+            &[("STATUS", "closed"), ("CLOSED_AT", "2026-10-02T07:40:00Z")],
+        )
+        .unwrap();
+        // One atomic replace: a new inode with both keys, nothing else left.
+        assert_ne!(ino(&p), before);
+        let rec = Record::load(&p).unwrap();
+        assert_eq!(rec.get("NAME"), "x");
+        assert_eq!(rec.get("STATUS"), "closed");
+        assert_eq!(rec.get("CLOSED_AT"), "2026-10-02T07:40:00Z");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

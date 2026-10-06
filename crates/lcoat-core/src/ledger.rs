@@ -357,8 +357,16 @@ impl Ledger {
             use std::os::unix::fs::OpenOptionsExt;
             opts.mode(0o600);
         }
+        let created = !self.path.exists();
         let mut f = opts.open(&self.path)?;
-        f.lock()?;
+        if created && let Some(dir) = self.path.parent() {
+            // The new ledger's directory entry must survive a crash too.
+            if let Ok(d) = std::fs::File::open(dir) {
+                let _ = d.sync_all();
+            }
+        }
+        f.lock()
+            .map_err(|e| lcoat_format::fsutil::lock_error(&self.path, &e))?;
         let result = (|| -> Result<()> {
             let prev = Self::head_hash(&self.path)?;
             let obj = crate::chain::link(event.to_object(), prev.as_ref());

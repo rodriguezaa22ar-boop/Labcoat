@@ -48,9 +48,12 @@ impl Lock {
                     "note: waiting for another lcoat command to finish in {}",
                     dir.display()
                 );
-                file.lock()?;
+                file.lock()
+                    .map_err(|e| lcoat_format::fsutil::lock_error(&path, &e))?;
             }
-            Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
+            Err(std::fs::TryLockError::Error(e)) => {
+                return Err(lcoat_format::fsutil::lock_error(&path, &e).into());
+            }
         }
         Ok(Self { _file: file, path })
     }
