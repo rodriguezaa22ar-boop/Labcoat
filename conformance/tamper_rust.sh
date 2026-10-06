@@ -143,7 +143,21 @@ grep -q '"status":"edited"' "$root/$LEDGER" || { fail "tamper did not apply"; }
 expect_exit "chain-verify" 1 "$BIN" ledger chain-verify demo
 "$BIN" ledger verify "$root/$LEDGER" 2>&1 | expect "shell-shaped ledger verify sees a well-formed ledger" "ledger: ok"
 "$BIN" op trust-chain demo 2>&1 | expect "trust-chain line" "Ledger Chain: broken"
+"$BIN" op trust-chain demo 2>&1 | expect "trust-chain status follows the chain" "Next Trust Step: The ledger cannot be trusted: ledger event 3 was altered"
 lite_says "has no chain and accepts the rewritten ledger (the gap this build closes)" "ledger: ok" ledger verify "$root/$LEDGER"
+
+echo "case 4b: rewrite a ledger event, then try to package the operation"
+root="$(fresh_root rewrite_then_package)"; export LCOAT_ROOT="$root"
+"$BIN" op resume demo >/dev/null
+sed -i '3s/"status":"ok"/"status":"edited"/' "$root/$LEDGER"
+"$BIN" op close --force >/dev/null
+# Every packet would anchor the edited ledger's whole-file hash, making the
+# edit part of the verified record; the writers refuse instead.
+"$BIN" op closeout demo 2>&1 | expect "closeout refuses" "refusing to write the closeout manifest: ledger event 3 was altered"
+expect_exit "closeout" 1 "$BIN" op closeout demo
+"$BIN" finding review-packet --op demo 2>&1 | expect "review packet refuses" "refusing to write the accepted-risk review packet"
+"$BIN" op trust-chain demo 2>&1 | expect "trust-chain status" "Trust Chain Status: attention-required"
+expect_exit "trust-chain --strict" 1 "$BIN" op trust-chain demo --strict
 
 echo "case 5: splice out a ledger event (prev_hash no longer matches)"
 root="$(fresh_root splice_event)"; export LCOAT_ROOT="$root"
