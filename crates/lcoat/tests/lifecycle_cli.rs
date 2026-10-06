@@ -991,17 +991,37 @@ fn a_writer_that_waited_for_the_lock_rechecks_the_state() {
         .open(op_dir.join(".lock"))
         .unwrap();
     held.lock().unwrap();
-    let child = Command::new(env!("CARGO_BIN_EXE_lcoat"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_lcoat"))
         .args(["evidence", "add", root.join("scan.txt").to_str().unwrap()])
         .env_remove("LAB_ROOT")
         .env("LCOAT_ROOT", &root)
         .env("LCOAT_OPERATOR", "tester")
-        .stdout(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    // Give it time to load the (still active) operation and block.
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    // The waiting note is printed only after the child has loaded the (still
+    // active) operation and found the lock held: change the state then, not
+    // after a fixed sleep.
+    let stderr = child.stderr.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        use std::io::BufRead;
+        let mut all = String::new();
+        for line in std::io::BufReader::new(stderr)
+            .lines()
+            .map_while(Result::ok)
+        {
+            if line.contains("note: waiting for another lcoat command") {
+                let _ = tx.send(());
+            }
+            all.push_str(&line);
+            all.push('\n');
+        }
+        all
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(60))
+        .expect("the child never reported waiting for the lock");
     // What a concurrent `op close` would have done while it waited.
     let session = op_dir.join("session.env");
     let text = std::fs::read_to_string(&session).unwrap();
@@ -1012,9 +1032,9 @@ fn a_writer_that_waited_for_the_lock_rechecks_the_state() {
         .count();
     held.unlock().unwrap();
 
-    let out = child.wait_with_output().unwrap();
-    let e = err(&out);
-    assert!(e.contains("note: waiting for another lcoat command"), "{e}");
+    let status = child.wait().unwrap();
+    let e = reader.join().unwrap();
+    assert!(!status.success(), "{e}");
     assert!(
         e.contains("operation 'demo' is no longer active (now closed)"),
         "{e}"
