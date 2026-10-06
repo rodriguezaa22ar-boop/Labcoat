@@ -197,6 +197,17 @@ A capture is recorded three times: the index (`evidence.ndjson`), the format 1.1
 
 Shell- and Lite-written operations have no manifest; their ledger still names every capture, so the check applies to them too, and a clean operation prints exactly as before (`readonly_diff.sh` unchanged). The trust chain uses the same function. `tamper_rust.sh` case 2 (manifest and index forged together) is now also caught by `evidence verify`, through the ledger; case 3b empties the index. Still a limit: someone who edits the artifact, the index, the manifest and the ledger event and recomputes the chain from there is caught only by packets written earlier or a recorded checkpoint.
 
+### A target is exactly one host (review 2026-10-05)
+
+`target add net 10.0.0.5/8 --scope-status in-scope` used to succeed, and the preflight then allowed a Tier 2 scan of it as "one in-scope target": nmap expands CIDR (`/8`), octet ranges (`192.168.1-254.1`) and wildcards itself, so the scope record named one target while the scan reached a network. A registered target with an empty address also fell back to its name, which DNS then resolved: field run 1's undeclared-target bug by another door.
+
+- `scope::validate_address` accepts exactly one IPv4 or IPv6 address (Rust's parser, so no leading zeros, no zone ids, no brackets) or one RFC 1123 DNS name (labels of letters, digits and inner hyphens, at most 63 characters each and 253 in all). A name whose last label is digits and hyphens must be an IP, which catches ranges and `10.0.0.256`.
+- It runs at three layers: `target add` refuses the record; the preflight denies any tier above 0 whose contact address fails it (recorded as `scope.preflight denied ... invalid-address`, so records on disk from before this rule are caught before anything runs); and the nmap adapter checks again before building argv. Tier 0 (recording evidence and findings) is not a contact and is unaffected.
+- A registered target with no address cannot start an operation; the error names the record to fix.
+- `ScopedTarget` now always carries the snapshot's contact address; the preflight has already refused any other identifier.
+
+A deliberate divergence: the shell stores and uses the address as given. The conformance scenarios use single addresses, so their output is unchanged.
+
 ### One lock per command, checked after it is taken (review 2026-10-05)
 
 Quality bar item 3 says a mutating command holds the lock for its whole duration. Two places did not:

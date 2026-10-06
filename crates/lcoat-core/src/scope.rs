@@ -399,6 +399,16 @@ impl Snapshot {
         }
     }
 
+    /// The address a tool is pointed at: the recorded address, or the
+    /// target itself when none was recorded.
+    pub fn contact_address(&self) -> &str {
+        if self.target_address.is_empty() {
+            &self.target
+        } else {
+            &self.target_address
+        }
+    }
+
     /// `atlas_scope_target_matches`: name, address or label.
     pub fn target_matches(&self, target: &str) -> bool {
         target == self.target
@@ -479,6 +489,16 @@ impl Snapshot {
                 ),
             );
         }
+        // The address a tool will be pointed at must be one host, whatever
+        // older records or a hand-edited snapshot hold.
+        if capability != Tier::ReadOnly
+            && let Err(e) = validate_address(self.contact_address())
+        {
+            return deny(
+                format!("{detail} invalid-address"),
+                format!("scope refused: {e}"),
+            );
+        }
         if contains(&self.blocked, cap) {
             return deny(
                 format!("{detail} blocked-capability={cap}"),
@@ -514,6 +534,56 @@ impl Snapshot {
             refusal: None,
         }
     }
+}
+
+/// Check that `address` names exactly one host: one IPv4 or IPv6 address,
+/// or one RFC 1123 DNS name. Everything nmap would expand into several
+/// hosts is refused: CIDR (`10.0.0.5/8`), octet ranges (`192.168.1-254.1`),
+/// wildcards, lists, and whitespace. A name whose last label is numeric
+/// must parse as an IP, so `10.0.0.256` and `1-254` are not taken for DNS
+/// names. Stricter than the shell build, which stores the address as given.
+pub fn validate_address(address: &str) -> Result<()> {
+    let refuse = |why: &str| -> Result<()> {
+        fail!(
+            "target address {address:?} {why}; a target address must be exactly one IP address or one DNS name"
+        )
+    };
+    if address.is_empty() {
+        return refuse("is empty");
+    }
+    if address.parse::<std::net::IpAddr>().is_ok() {
+        return Ok(());
+    }
+    if address.contains('/') {
+        return refuse("is a network (CIDR)");
+    }
+    if address.contains(['*', ',', '?']) || address.contains(char::is_whitespace) {
+        return refuse("names more than one host");
+    }
+    if address.contains(':') || address.starts_with('[') {
+        return refuse("is not a valid IPv6 address");
+    }
+    if address.len() > 253 {
+        return refuse("is longer than 253 characters");
+    }
+    let labels: Vec<&str> = address.split('.').collect();
+    for label in &labels {
+        let ok = !label.is_empty()
+            && label.len() <= 63
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            && !label.starts_with('-')
+            && !label.ends_with('-');
+        if !ok {
+            return refuse("is not a valid IP address or DNS name");
+        }
+    }
+    let last = labels.last().copied().unwrap_or_default();
+    if last.bytes().all(|b| b.is_ascii_digit() || b == b'-') {
+        return refuse("looks numeric but is not a single IP address (an octet range?)");
+    }
+    Ok(())
 }
 
 /// Validate a target registry scope status (`target_validate_scope_status`).
@@ -554,6 +624,71 @@ mod tests {
             recommended_workflows: String::new(),
             validation_lanes: String::new(),
         }
+    }
+
+    #[test]
+    fn a_target_address_is_exactly_one_host() {
+        for good in [
+            "10.10.10.5",
+            "100.71.57.96",
+            "::1",
+            "fe80::1",
+            "2001:db8::5",
+            "astra",
+            "astra.tail1234.ts.net",
+            "web-01.lab",
+            "x1",
+        ] {
+            assert!(validate_address(good).is_ok(), "{good}");
+        }
+        for bad in [
+            "",
+            "10.0.0.5/8",
+            "10.0.0.0/24",
+            "192.168.1-254.1",
+            "10.0.0.1-5",
+            "10.0.0.256",
+            "010.0.0.1",
+            "1-254",
+            "*.*.*.*",
+            "10.0.0.*",
+            "a.lab,b.lab",
+            "a.lab b.lab",
+            "a.lab\n",
+            "-sL",
+            "-host",
+            "host-",
+            "a..b",
+            "under_score.lab",
+            "[::1]",
+            "fe80::1%eth0",
+            "::1/128",
+            "scanme.nmap.org/24",
+        ] {
+            assert!(validate_address(bad).is_err(), "{bad:?}");
+        }
+        assert!(validate_address(&"a".repeat(64)).is_err());
+        assert!(validate_address(&["a"; 127].join(".")).is_ok());
+        assert!(validate_address(&["a"; 128].join(".")).is_err());
+    }
+
+    #[test]
+    fn preflight_refuses_a_contact_address_that_is_not_one_host() {
+        let mut s = snap();
+        s.target_address = "100.71.57.0/24".into();
+        let d = s.preflight(Tier::ActiveRecon, "astra", "nmap", |_| true);
+        assert!(!d.allowed);
+        assert_eq!(d.detail, "reason=nmap invalid-address");
+        assert!(d.refusal.as_deref().unwrap().contains("is a network"));
+        // Recording evidence is not a contact and stays allowed.
+        assert!(s.preflight(Tier::ReadOnly, "astra", "x", |_| true).allowed);
+        // No recorded address: the name itself must be one host.
+        s.target_address = String::new();
+        s.target = "*".into();
+        assert!(
+            !s.preflight(Tier::ActiveRecon, "*", "nmap", |_| true)
+                .allowed
+        );
     }
 
     #[test]
