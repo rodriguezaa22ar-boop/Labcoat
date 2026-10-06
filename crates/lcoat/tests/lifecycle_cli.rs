@@ -1104,3 +1104,218 @@ fn a_broken_ledger_chain_is_never_current_and_never_anchored() {
     assert_eq!(kv(&text, "Ledger Chain"), "missing");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Review 2026-10-05: a command loaded its operation, then waited for the
+/// lock; if `op close` ran meanwhile, `evidence add` appended to the closed
+/// operation. The state is now checked again once the lock is held.
+#[test]
+fn a_writer_that_waited_for_the_lock_rechecks_the_state() {
+    let root = fresh("recheck");
+    std::fs::write(root.join("scan.txt"), b"22/tcp open ssh\n").unwrap();
+    ok(&lcoat(
+        &root,
+        &[
+            "target",
+            "add",
+            "box",
+            "127.0.0.1",
+            "--scope-status",
+            "in-scope",
+        ],
+    ));
+    ok(&lcoat(&root, &["op", "start", "demo", "box"]));
+    let op_dir = root.join("sessions/demo");
+
+    // Hold the operation lock as another lcoat command would.
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(op_dir.join(".lock"))
+        .unwrap();
+    held.lock().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_lcoat"))
+        .args(["evidence", "add", root.join("scan.txt").to_str().unwrap()])
+        .env_remove("LAB_ROOT")
+        .env("LCOAT_ROOT", &root)
+        .env("LCOAT_OPERATOR", "tester")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // The waiting note is printed only after the child has loaded the (still
+    // active) operation and found the lock held: change the state then, not
+    // after a fixed sleep.
+    let stderr = child.stderr.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        use std::io::BufRead;
+        let mut all = String::new();
+        for line in std::io::BufReader::new(stderr)
+            .lines()
+            .map_while(Result::ok)
+        {
+            if line.contains("note: waiting for another lcoat command") {
+                let _ = tx.send(());
+            }
+            all.push_str(&line);
+            all.push('\n');
+        }
+        all
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(60))
+        .expect("the child never reported waiting for the lock");
+    // What a concurrent `op close` would have done while it waited.
+    let session = op_dir.join("session.env");
+    let text = std::fs::read_to_string(&session).unwrap();
+    std::fs::write(&session, text.replace("STATUS=active", "STATUS=closed")).unwrap();
+    let events_before = std::fs::read_to_string(op_dir.join("ledger.ndjson"))
+        .unwrap()
+        .lines()
+        .count();
+    held.unlock().unwrap();
+
+    let status = child.wait().unwrap();
+    let e = reader.join().unwrap();
+    assert!(!status.success(), "{e}");
+    assert!(
+        e.contains("operation 'demo' is no longer active (now closed)"),
+        "{e}"
+    );
+    let events_after = std::fs::read_to_string(op_dir.join("ledger.ndjson"))
+        .unwrap()
+        .lines()
+        .count();
+    assert_eq!(events_before, events_after, "nothing may be appended");
+    let copied = std::fs::read_dir(op_dir.join("evidence"))
+        .map(|rd| {
+            rd.flatten()
+                .any(|e| e.file_name().to_string_lossy().starts_with("ev_"))
+        })
+        .unwrap_or(false);
+    assert!(!copied, "no artifact may be copied");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Review 2026-10-05: two adapter runs at once shared one capture file, so
+/// one run recorded the other's output as its evidence (with a matching
+/// hash). A run now holds the operation lock throughout and captures under
+/// its own name; each run's evidence is its own output.
+#[test]
+fn concurrent_adapter_runs_keep_their_own_evidence() {
+    if !cfg!(feature = "adapters") {
+        return;
+    }
+    let root = fresh("concurrent-runs");
+    ok(&lcoat(
+        &root,
+        &[
+            "target",
+            "add",
+            "box",
+            "127.0.0.1",
+            "--scope-status",
+            "in-scope",
+        ],
+    ));
+    ok(&lcoat(&root, &["op", "start", "demo", "box"]));
+    let spawn = |word: &str| {
+        Command::new(env!("CARGO_BIN_EXE_lcoat"))
+            .args([
+                "adapter", "run", "script", "box", "--tier", "1", "--", "/bin/sh", "-c",
+            ])
+            .arg(format!("sleep 1; echo {word}"))
+            .env_remove("LAB_ROOT")
+            .env("LCOAT_ROOT", &root)
+            .env("LCOAT_OPERATOR", "tester")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap()
+    };
+    let a = spawn("AAA");
+    let b = spawn("BBB");
+    for (child, word) in [(a, "AAA"), (b, "BBB")] {
+        let out = ok(&child.wait_with_output().unwrap());
+        let id = kv(&out, "evidence");
+        assert!(id.starts_with("ev_"), "{out}");
+        let dir = root.join("sessions/demo/evidence").join(&id);
+        let file = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .next()
+            .unwrap()
+            .path();
+        let body = std::fs::read_to_string(file).unwrap();
+        assert_eq!(body.trim(), word, "run {word} recorded {body:?}");
+    }
+    // Each started run is finished before the next starts.
+    let events: Vec<String> = std::fs::read_to_string(root.join("sessions/demo/ledger.ndjson"))
+        .unwrap()
+        .lines()
+        .filter_map(|l| {
+            ["adapter.started", "adapter.finished"]
+                .into_iter()
+                .find(|e| l.contains(&format!(r#""event":"{e}""#)))
+                .map(str::to_owned)
+        })
+        .collect();
+    assert_eq!(
+        events,
+        [
+            "adapter.started",
+            "adapter.finished",
+            "adapter.started",
+            "adapter.finished"
+        ]
+    );
+    ok(&lcoat(&root, &["evidence", "verify", "demo"]));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Review 2026-10-05: a tool that could not be started left an
+/// `adapter.started` with no `adapter.finished`.
+#[test]
+fn a_run_that_cannot_start_is_still_finished_in_the_ledger() {
+    if !cfg!(feature = "adapters") {
+        return;
+    }
+    let root = fresh("spawn-failed");
+    ok(&lcoat(
+        &root,
+        &[
+            "target",
+            "add",
+            "box",
+            "127.0.0.1",
+            "--scope-status",
+            "in-scope",
+        ],
+    ));
+    ok(&lcoat(&root, &["op", "start", "demo", "box"]));
+    // Executable, but its interpreter does not exist: found, then fails to spawn.
+    let tool = root.join("broken-tool");
+    std::fs::write(&tool, "#!/nonexistent/interpreter\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    err(&lcoat(
+        &root,
+        &[
+            "adapter",
+            "run",
+            "script",
+            "box",
+            "--tier",
+            "1",
+            "--",
+            tool.to_str().unwrap(),
+        ],
+    ));
+    let ledger = std::fs::read_to_string(root.join("sessions/demo/ledger.ndjson")).unwrap();
+    let last = ledger.lines().last().unwrap();
+    assert!(last.contains(r#""event":"adapter.finished""#), "{last}");
+    assert!(last.contains("reason=spawn-failed"), "{last}");
+    let _ = std::fs::remove_dir_all(&root);
+}

@@ -227,7 +227,11 @@ mod sealed {
 }
 
 /// A lifecycle state marker. Sealed: only the three states below exist.
-pub trait State: sealed::Sealed + Copy + std::fmt::Debug + Default + PartialEq + Eq {}
+pub trait State: sealed::Sealed + Copy + std::fmt::Debug + Default + PartialEq + Eq {
+    /// The `STATUS` this state stands for; `None` for [`AnyState`]. Checked
+    /// again under the operation lock (see [`Operation::lock`]).
+    const STATUS: Option<&'static str>;
+}
 
 /// Loaded without checking `STATUS`; what every read-only API accepts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -242,9 +246,15 @@ pub struct Closed;
 impl sealed::Sealed for AnyState {}
 impl sealed::Sealed for Active {}
 impl sealed::Sealed for Closed {}
-impl State for AnyState {}
-impl State for Active {}
-impl State for Closed {}
+impl State for AnyState {
+    const STATUS: Option<&'static str> = None;
+}
+impl State for Active {
+    const STATUS: Option<&'static str> = Some("active");
+}
+impl State for Closed {
+    const STATUS: Option<&'static str> = Some("closed");
+}
 
 /// The session record file name.
 pub const SESSION_FILE: &str = "session.env";
@@ -511,9 +521,32 @@ impl<S: State> Operation<S> {
         })
     }
 
-    /// Take the operation lock for a mutating command.
-    pub(crate) fn lock(&self) -> Result<Lock> {
-        Lock::acquire(&self.dir)
+    /// Take the operation lock for a mutating command, then check that the
+    /// operation is still in the state this handle was classified as. The
+    /// handle was loaded before the lock was free, so another command may
+    /// have closed or resumed it meanwhile (review 2026-10-05: `evidence
+    /// add` blocked behind `op close` appended to the closed operation).
+    /// Every writer takes this lock before its first write, so after this
+    /// check the typestate holds for the rest of the command.
+    pub fn lock(&self) -> Result<Lock> {
+        let lock = Lock::acquire(&self.dir)?;
+        if let Some(want) = S::STATUS {
+            let now = Record::load(&self.file)
+                .map(|r| r.get("STATUS").to_owned())
+                .unwrap_or_default();
+            if now != want {
+                fail!(
+                    "operation '{}' is no longer {want} (now {}): another lcoat command changed it while this one waited; nothing was recorded",
+                    self.slug,
+                    if now.is_empty() {
+                        "unknown"
+                    } else {
+                        now.as_str()
+                    }
+                );
+            }
+        }
+        Ok(lock)
     }
 }
 
