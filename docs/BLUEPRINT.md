@@ -272,6 +272,8 @@ Every Lite command keeps its name, arguments and output. New: `finding resolve /
 
 Two deliberate behaviour changes: an unset lab root is an error; a missing `<target>` is reported before any argument is read.
 
+`target update <name> [--address] [--scope-status] [--criticality] [--tag]… [--clear-tags] [--owner] [--notes]` is the shell build's command (Lite does not have it), with the same options, output and record key order, plus the `next:` line `target add` prints when the result is in scope, and every free-text value scanned like `target add`. Added after review 2026-10-05: the refusals told the operator to re-run `target add`, which refuses an existing target, so a `review` target could never be put in scope; they now point at `target update`. An operation already started keeps the scope snapshot it took.
+
 ## Dependencies, toolchain and supply chain
 
 **Default: the library crates use the standard library only, as Lite used Go's.** Lite's zero-dependency supply chain was a strength, and the environment this scaffold was built in has no crates.io access, so anything built on external crates could not have been compiled before hand-over. The formats are small and ours; std has file locking (1.89); SHA-256 and strict JSON are about 200 lines each with exact test vectors. Phase 0 shipped them and they reproduce every golden hash.

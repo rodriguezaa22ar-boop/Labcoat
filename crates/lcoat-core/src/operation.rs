@@ -178,6 +178,99 @@ pub fn add_target(root: &LabRoot, t: &NewTarget) -> Result<String> {
     Ok(slug)
 }
 
+/// One `--tag` or `--clear-tags` of `target update`, applied in the order
+/// given, as the shell build does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TagEdit {
+    /// Append a tag unless it is already there.
+    Add(String),
+    /// Drop every tag.
+    Clear,
+}
+
+/// The changes `target update` makes; `None` keeps the current value.
+#[derive(Clone, Debug, Default)]
+pub struct TargetUpdate {
+    /// New `ADDRESS`.
+    pub address: Option<String>,
+    /// New `SCOPE_STATUS`.
+    pub scope_status: Option<String>,
+    /// New `CRITICALITY`.
+    pub criticality: Option<String>,
+    /// Tag edits in order.
+    pub tags: Vec<TagEdit>,
+    /// New `OWNER`.
+    pub owner: Option<String>,
+    /// New `NOTES` (replaces them).
+    pub notes: Option<String>,
+}
+
+/// `cmd_target_update`: rewrite a target record in place, under the state
+/// lock, with the shell build's key order (each written key moves to the
+/// end, then `UPDATED_AT`). An unset scope status or criticality is
+/// written as `unknown`. Operations already started keep the scope
+/// snapshot they took; only a new operation sees the change.
+pub fn update_target(root: &LabRoot, name: &str, u: &TargetUpdate) -> Result<Target> {
+    let slug = slugify(name);
+    if !is_safe_slug(&slug) {
+        fail!("unknown target: {slug}");
+    }
+    let _lock = Lock::acquire(&root.atlas_state)?;
+    let path = target_file(root, name);
+    let mut rec = match Record::load(&path) {
+        Ok(rec) => rec,
+        Err(e) if e.is_not_found() => fail!("unknown target: {slug}"),
+        Err(e) => return Err(Error::Env(e)),
+    };
+    let pick = |new: &Option<String>, key: &str| -> String {
+        new.clone().unwrap_or_else(|| rec.get(key).to_owned())
+    };
+    let address = pick(&u.address, "ADDRESS");
+    let scope_status = or_unknown(&pick(&u.scope_status, "SCOPE_STATUS"));
+    let criticality = or_unknown(&pick(&u.criticality, "CRITICALITY"));
+    let owner = pick(&u.owner, "OWNER");
+    let notes = pick(&u.notes, "NOTES");
+    let mut tags: Vec<String> = rec
+        .get("TAGS")
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    for edit in &u.tags {
+        match edit {
+            // `target_join_unique`: the result has each tag once.
+            TagEdit::Add(t) => {
+                let mut seen = Vec::with_capacity(tags.len() + 1);
+                for tag in tags.drain(..).chain(std::iter::once(t.clone())) {
+                    if !seen.contains(&tag) {
+                        seen.push(tag);
+                    }
+                }
+                tags = seen;
+            }
+            TagEdit::Clear => tags.clear(),
+        }
+    }
+    if !scope::valid_scope_status(&scope_status) {
+        fail!(
+            "expected target scope status unknown, review, in-scope, or out-of-scope; got: {scope_status}"
+        );
+    }
+    if !scope::valid_criticality(&criticality) {
+        fail!(
+            "expected target criticality unknown, low, medium, high, or critical; got: {criticality}"
+        );
+    }
+    rec.upsert("ADDRESS", address);
+    rec.upsert("SCOPE_STATUS", scope_status);
+    rec.upsert("CRITICALITY", criticality);
+    rec.upsert("TAGS", tags.join(" "));
+    rec.upsert("OWNER", owner);
+    rec.upsert("NOTES", notes);
+    rec.upsert("UPDATED_AT", clock::timestamp());
+    rec.save(&path)?;
+    Ok(Target::from_record(&path, &rec))
+}
+
 fn or_unknown(s: &str) -> String {
     if s.is_empty() {
         "unknown".to_owned()
