@@ -482,7 +482,7 @@ impl<S: State> Operation<S> {
 
     /// `atlas_ledger_append_current`: append an event for this operation.
     /// Public for the adapter runner's `adapter.*` events; the detail is a
-    /// [`MetadataOnly`] so nothing raw can be recorded through it.
+    /// [`MetadataOnly`](crate::metadata::MetadataOnly) so nothing raw can be recorded through it.
     pub fn append_event(
         &self,
         event: &str,
