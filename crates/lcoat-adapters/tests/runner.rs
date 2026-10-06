@@ -62,7 +62,15 @@ fn script_run_records_events_and_captures_evidence() {
         &RunParams {
             adapter: "script".into(),
             target: String::new(),
-            args: args(&["--tier", "1", "--", "/bin/echo", "hello", "world"]),
+            args: args(&[
+                "--tier",
+                "1",
+                "--",
+                "/bin/sh",
+                "-c",
+                "echo hello world",
+                "{target}",
+            ]),
             timeout: None,
         },
     )
@@ -121,7 +129,14 @@ fn script_run_records_events_and_captures_evidence() {
         &RunParams {
             adapter: "script".into(),
             target: String::new(),
-            args: args(&["--tier", "1", "/bin/sh", "-c", "echo oops >&2; exit 2"]),
+            args: args(&[
+                "--tier",
+                "1",
+                "/bin/sh",
+                "-c",
+                "echo oops >&2; exit 2",
+                "{target}",
+            ]),
             timeout: None,
         },
     )
@@ -141,7 +156,7 @@ fn script_run_records_events_and_captures_evidence() {
         &RunParams {
             adapter: "script".into(),
             target: String::new(),
-            args: args(&["--tier", "1", "/bin/sleep", "5"]),
+            args: args(&["--tier", "1", "/bin/sh", "-c", "exec sleep 5", "{target}"]),
             timeout: Some(Duration::from_millis(200)),
         },
     )
@@ -231,13 +246,37 @@ fn refusals_happen_before_anything_runs() {
     assert_eq!(events.last().unwrap().event, "scope.preflight");
     assert_eq!(events.last().unwrap().status, "denied");
 
+    // A script naming another host: the preflight allowed the target, the
+    // adapter refuses the command, the ledger closes the request, and
+    // nothing runs (review 2026-10-05).
+    let before = op.events().unwrap().len();
+    let err = run(
+        &op,
+        &RunParams {
+            adapter: "script".into(),
+            target: String::new(),
+            args: args(&["--tier", "2", "--", "/bin/echo", "8.8.8.8"]),
+            timeout: None,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("not this operation's target"),
+        "{err}"
+    );
+    let names: Vec<String> = op.events().unwrap()[before..]
+        .iter()
+        .map(|e| format!("{} {}", e.event, e.status))
+        .collect();
+    assert_eq!(names, ["scope.preflight allowed", "adapter.refused denied"]);
+
     // Tier 3 needs an approval; with one it runs.
     let err = run(
         &op,
         &RunParams {
             adapter: "script".into(),
             target: String::new(),
-            args: args(&["--tier", "3", "/bin/echo", "probe"]),
+            args: args(&["--tier", "3", "/bin/echo", "probe", "{target}"]),
             timeout: None,
         },
     )
@@ -257,7 +296,7 @@ fn refusals_happen_before_anything_runs() {
         &RunParams {
             adapter: "script".into(),
             target: String::new(),
-            args: args(&["--tier", "3", "/bin/echo", "probe"]),
+            args: args(&["--tier", "3", "/bin/echo", "probe", "{target}"]),
             timeout: None,
         },
     )

@@ -216,6 +216,7 @@ fn full_lifecycle_through_the_binary() {
                 "--",
                 "/bin/echo",
                 "probe",
+                "{target}",
             ],
         ));
         assert_eq!(kv(&a, "tier"), "3");
@@ -570,7 +571,7 @@ fn any_target_identifier_lands_under_the_target() {
                 "3",
                 "--",
                 "/bin/echo",
-                "x",
+                "{target}",
             ],
         ));
         assert_eq!(kv(&a, "tier"), "3");
@@ -670,8 +671,10 @@ fn a_timed_out_run_says_it_is_incomplete() {
             "--tier",
             "1",
             "--",
-            "/bin/sleep",
-            "5",
+            "/bin/sh",
+            "-c",
+            "exec sleep 5",
+            "{target}",
         ],
     );
     let all = format!(

@@ -185,6 +185,14 @@ Everything above except the last clause is done and checked by `conformance/cros
 Twice in the field a `<placeholder>` in a pasted command became a shell redirect (one of them let `op start` run on an undeclared target). Commands that create something now end with `next: lcoat ...` lines carrying the real ids, quoted for bash and zsh (`'...'` with `'\''`; plain words bare): `target add` (start an operation, or a note that a non-in-scope target will not be contacted), `finding add` (resolve or accept that finding), `op close` (closeout by name), and `adapter run`, which prints one ready-to-run `finding add` per proposed finding with this run's evidence id. Titles there come from service banners chosen by the scanned host, so the quoting is tested through a real bash with command substitution, backticks, quotes and globs, and a printed line is executed in the CLI tests. `op status` gains an `Adapter Runs:` line when there are any (the shell's `Recon Runs` counts a different feature and stays as it is, so shell-written operations print byte-identically).
 
 This also closed a quiet gap: the trust chain used to take any recorded review packet as verified without reading it (inherited from Lite). It now verifies the latest one, so a changed finding index after the review shows `Accepted Risk Review Packet: attention-required`.
+### The script adapter is bound to the scoped target (review 2026-10-05)
+
+`adapter run script node --tier 2 -- /bin/echo 8.8.8.8` ran after a preflight for 127.0.0.1: the adapter ignored the `ScopedTarget` it was handed, so THREAT_MODEL's "nothing above Tier 0 contacts a target not recorded in-scope" was false for scripts.
+
+- The command must name the target: `{target}` anywhere in an argument (`http://{target}:8080/`, `root@{target}`) is replaced with the scoped address, or the address can be typed literally. A command that names no target is refused, and the message points to `evidence add` for output that does not touch the target. `{target}` is literal in bash and zsh (no comma, no `..`), so it survives pasting.
+- Any other host in the arguments is refused: an IP address or network anywhere in an argument (including inside `sh -c '...'` strings and `--resolve x:80:1.2.3.4`), a `scheme://host` URL, or `user@host.domain`. Bare words that might be DNS names are not judged; THREAT_MODEL.md says so.
+- When the adapter refuses to build a command after an allowed preflight, the runner records `adapter.refused` (`reason=command-refused`), so the ledger never shows an allowed preflight that led nowhere.
+
 ### Fuzzing (after phase 2)
 
 Thirteen targets, each a function in `crates/lcoat-fuzz/src/targets.rs` that feeds bytes to a parser the way the binary does and asserts what makes the parser safe to trust, not only that it does not panic:
