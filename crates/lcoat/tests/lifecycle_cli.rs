@@ -216,6 +216,7 @@ fn full_lifecycle_through_the_binary() {
                 "--",
                 "/bin/echo",
                 "probe",
+                "{target}",
             ],
         ));
         assert_eq!(kv(&a, "tier"), "3");
@@ -570,7 +571,7 @@ fn any_target_identifier_lands_under_the_target() {
                 "3",
                 "--",
                 "/bin/echo",
-                "x",
+                "{target}",
             ],
         ));
         assert_eq!(kv(&a, "tier"), "3");
@@ -670,8 +671,10 @@ fn a_timed_out_run_says_it_is_incomplete() {
             "--tier",
             "1",
             "--",
-            "/bin/sleep",
-            "5",
+            "/bin/sh",
+            "-c",
+            "exec sleep 5",
+            "{target}",
         ],
     );
     let all = format!(
@@ -1262,6 +1265,7 @@ fn concurrent_adapter_runs_keep_their_own_evidence() {
                 "adapter", "run", "script", "box", "--tier", "1", "--", "/bin/sh", "-c",
             ])
             .arg(format!("sleep 1; echo {word}"))
+            .arg("{target}")
             .env_remove("LAB_ROOT")
             .env("LCOAT_ROOT", &root)
             .env("LCOAT_OPERATOR", "tester")
@@ -1349,6 +1353,7 @@ fn a_run_that_cannot_start_is_still_finished_in_the_ledger() {
             "1",
             "--",
             tool.to_str().unwrap(),
+            "{target}",
         ],
     ));
     let ledger = std::fs::read_to_string(root.join("sessions/demo/ledger.ndjson")).unwrap();

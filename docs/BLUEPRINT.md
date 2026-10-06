@@ -197,6 +197,14 @@ A capture is recorded three times: the index (`evidence.ndjson`), the format 1.1
 
 Shell- and Lite-written operations have no manifest; their ledger still names every capture, so the check applies to them too, and a clean operation prints exactly as before (`readonly_diff.sh` unchanged). The trust chain uses the same function. `tamper_rust.sh` case 2 (manifest and index forged together) is now also caught by `evidence verify`, through the ledger; case 3b empties the index. Still a limit: someone who edits the artifact, the index, the manifest and the ledger event and recomputes the chain from there is caught only by packets written earlier or a recorded checkpoint.
 
+### The script adapter is bound to the scoped target (review 2026-10-05)
+
+`adapter run script node --tier 2 -- /bin/echo 8.8.8.8` ran after a preflight for 127.0.0.1: the adapter ignored the `ScopedTarget` it was handed, so THREAT_MODEL's "nothing above Tier 0 contacts a target not recorded in-scope" was false for scripts.
+
+- The command must name the target: `{target}` anywhere in an argument (`http://{target}:8080/`, `root@{target}`) is replaced with the scoped address, or the address can be typed literally. A command that names no target is refused, and the message points to `evidence add` for output that does not touch the target. `{target}` is literal in bash and zsh (no comma, no `..`), so it survives pasting.
+- Any other host in the arguments is refused: an IP address or network anywhere in an argument (including inside `sh -c '...'` strings and `--resolve x:80:1.2.3.4`), a `scheme://host` URL, or `user@host.domain`. Bare words that might be DNS names are not judged; THREAT_MODEL.md says so.
+- When the adapter refuses to build a command after an allowed preflight, the runner records `adapter.refused` (`reason=command-refused`), so the ledger never shows an allowed preflight that led nowhere.
+
 ### One lock per command, checked after it is taken (review 2026-10-05)
 
 Quality bar item 3 says a mutating command holds the lock for its whole duration. Two places did not:

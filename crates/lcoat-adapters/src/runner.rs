@@ -4,7 +4,8 @@
 //!
 //! Order of events, which the audit packet makes visible:
 //!
-//! 1. `adapter.refused` (Tier 4/5, before any preflight) — or —
+//! 1. `adapter.refused` (Tier 4/5, before any preflight; or after an
+//!    allowed preflight when the adapter refuses to build the command) — or —
 //! 2. `scope.preflight` (allowed/denied; denied stops here),
 //! 3. `adapter.started` with the vantage,
 //! 4. `artifact.created` for the captured output,
@@ -275,7 +276,24 @@ pub fn run(op: &Operation<Active>, p: &RunParams) -> Result<Outcome> {
     // The preflight records allowed/denied and is the only source of a ScopedTarget.
     let scoped: ScopedTarget =
         op.scoped_target(tier, name, &target, &format!("run adapter {name}"))?;
-    let mut argv = adapter.command(&scoped, &p.args)?;
+    // An argv the adapter will not build (a script naming another host,
+    // an address that is not one host) closes the request in the ledger.
+    let mut argv = match adapter.command(&scoped, &p.args) {
+        Ok(argv) => argv,
+        Err(e) => {
+            op.append_event(
+                "adapter.refused",
+                tier,
+                name,
+                "denied",
+                &meta(format!(
+                    "adapter={name} tier={} reason=command-refused",
+                    tier as u8
+                ))?,
+            )?;
+            return Err(e);
+        }
+    };
     let resolved = look_path(&argv[0])?;
     argv[0] = resolved.display().to_string();
 
