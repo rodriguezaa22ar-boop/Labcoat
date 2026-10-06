@@ -30,6 +30,9 @@ impl Lock {
     pub fn acquire(dir: &Path) -> Result<Self> {
         mkdir_private(dir)?;
         let path = dir.join(LOCK_FILE);
+        // The lock file is never written, but a planted link would still
+        // make it create or truncate-free open a file elsewhere: refuse it.
+        lcoat_format::fsutil::check_write_path(&path)?;
         let mut opts = OpenOptions::new();
         opts.read(true).write(true).create(true).truncate(false);
         #[cfg(unix)]
@@ -37,7 +40,7 @@ impl Lock {
             use std::os::unix::fs::OpenOptionsExt;
             opts.mode(0o600);
         }
-        let file = opts.open(&path)?;
+        let file = lcoat_format::fsutil::no_follow(&mut opts).open(&path)?;
         match file.try_lock() {
             Ok(()) => {}
             Err(std::fs::TryLockError::WouldBlock) => {

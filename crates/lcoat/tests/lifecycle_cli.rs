@@ -1258,3 +1258,68 @@ fn a_broken_ledger_chain_is_never_current_and_never_anchored() {
     assert_eq!(kv(&text, "Ledger Chain"), "missing");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Review 2026-10-05: a planted `manifest.ndjson` symlink made `evidence
+/// add` append outside the root, and a `reports/` symlink made `op report`
+/// write there. Writes now refuse to follow a link below the lab root, and
+/// nothing lands outside it.
+#[test]
+fn writes_never_follow_a_planted_symlink() {
+    use std::os::unix::fs::symlink;
+    let root = fresh("symlinks");
+    let outside = fresh("symlinks-outside");
+    std::fs::write(root.join("scan.txt"), b"22/tcp open ssh\n").unwrap();
+    let scan = root.join("scan.txt");
+    ok(&lcoat(
+        &root,
+        &[
+            "target",
+            "add",
+            "box",
+            "127.0.0.1",
+            "--scope-status",
+            "in-scope",
+        ],
+    ));
+    ok(&lcoat(&root, &["op", "start", "demo", "box"]));
+    let op_dir = root.join("sessions/demo");
+
+    // A manifest that is a link to a file elsewhere.
+    ok(&lcoat(&root, &["evidence", "add", scan.to_str().unwrap()]));
+    let manifest = op_dir.join("evidence/manifest.ndjson");
+    std::fs::rename(&manifest, outside.join("manifest.ndjson")).unwrap();
+    symlink(outside.join("manifest.ndjson"), &manifest).unwrap();
+    let before = std::fs::read(outside.join("manifest.ndjson")).unwrap();
+    let e = err(&lcoat(&root, &["evidence", "add", scan.to_str().unwrap()]));
+    assert!(e.contains("manifest.ndjson: it is a symbolic link"), "{e}");
+    assert_eq!(
+        std::fs::read(outside.join("manifest.ndjson")).unwrap(),
+        before
+    );
+    std::fs::remove_file(&manifest).unwrap();
+    std::fs::rename(outside.join("manifest.ndjson"), &manifest).unwrap();
+
+    // A reports directory that is a link to a directory elsewhere.
+    let reports = root.join("reports");
+    let _ = std::fs::remove_dir_all(&reports);
+    symlink(&outside, &reports).unwrap();
+    let e = err(&lcoat(&root, &["op", "report"]));
+    assert!(e.contains("is a symbolic link"), "{e}");
+    assert!(e.contains("reports"), "{e}");
+    assert_eq!(
+        std::fs::read_dir(&outside).unwrap().count(),
+        0,
+        "nothing may land outside"
+    );
+    std::fs::remove_file(&reports).unwrap();
+    ok(&lcoat(&root, &["op", "report"]));
+
+    // A link further up (the operation's evidence directory) is refused too.
+    let evidence = op_dir.join("evidence");
+    std::fs::rename(&evidence, outside.join("evidence")).unwrap();
+    symlink(outside.join("evidence"), &evidence).unwrap();
+    let e = err(&lcoat(&root, &["evidence", "add", scan.to_str().unwrap()]));
+    assert!(e.contains("is a symbolic link"), "{e}");
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&outside);
+}
