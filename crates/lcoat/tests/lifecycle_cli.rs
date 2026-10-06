@@ -963,6 +963,67 @@ fn next_lines_run_as_printed() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Review 2026-10-05: a flag after the positionals was silently recorded
+/// as notes (`op start t1 box --profile x` ran with the default profile),
+/// and read-only verbs ignored flags they did not know.
+#[test]
+fn every_verb_honours_or_refuses_each_argument() {
+    let root = fresh("args");
+    ok(&lcoat(
+        &root,
+        &[
+            "target",
+            "add",
+            "box",
+            "127.0.0.1",
+            "lab",
+            "vm",
+            "--scope-status",
+            "in-scope",
+        ],
+    ));
+    assert!(ok(&lcoat(&root, &["target", "show", "box"])).contains("Scope Status: in-scope"));
+
+    // The profile is read wherever it appears; an unknown one is refused.
+    let e = err(&lcoat(
+        &root,
+        &["op", "start", "t1", "box", "--profile", "no-such-profile"],
+    ));
+    assert!(e.contains("no-such-profile"), "{e}");
+    assert!(!root.join("sessions/t1").exists());
+    let e = err(&lcoat(
+        &root,
+        &["op", "start", "t1", "box", "--profle", "x"],
+    ));
+    assert!(e.contains("unknown option: --profle"), "{e}");
+
+    // After `--`, flag-looking words are recorded as notes.
+    ok(&lcoat(
+        &root,
+        &["op", "start", "t1", "box", "--", "--profile", "is", "text"],
+    ));
+    assert!(ok(&lcoat(&root, &["op", "show"])).contains("Notes: --profile is text"));
+
+    for bad in [
+        &["op", "status", "--json"][..],
+        &["op", "show", "t1", "extra"],
+        &["op", "list", "--all"],
+        &["evidence", "list", "--json"],
+        &["finding", "list", "--op", "t1"],
+        &["approval", "list", "t1", "t2"],
+        &["scope", "check", "active-recon", "box", "now"],
+        &["op", "trust-chain", "--strct"],
+    ] {
+        let e = err(&lcoat(&root, bad));
+        assert!(
+            e.contains("unknown option") || e.contains("unexpected argument"),
+            "{bad:?}: {e}"
+        );
+        assert!(e.contains("usage: lcoat "), "{bad:?}: {e}");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// Review 2026-10-05: `evidence verify` trusted the index alone. Emptying
 /// it gave `verified, checked 0`; a newer index record with a new hash
 /// re-blessed an edited artifact; a `..` path was followed. The index is

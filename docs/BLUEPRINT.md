@@ -197,6 +197,16 @@ A capture is recorded three times: the index (`evidence.ndjson`), the format 1.1
 
 Shell- and Lite-written operations have no manifest; their ledger still names every capture, so the check applies to them too, and a clean operation prints exactly as before (`readonly_diff.sh` unchanged). The trust chain uses the same function. `tamper_rust.sh` case 2 (manifest and index forged together) is now also caught by `evidence verify`, through the ledger; case 3b empties the index. Still a limit: someone who edits the artifact, the index, the manifest and the ledger event and recomputes the chain from there is caught only by packets written earlier or a recorded checkpoint.
 
+### One argument parser for every verb (review 2026-10-05)
+
+`op start t1 node --profile foo` ran with the default profile and recorded `--profile foo` as notes; the profile decides what scope allows. `target add` had the same shape, and read-only verbs ignored flags they did not know: `op status --json` printed text and exited 0, which a script would take as JSON support.
+
+- `cli/args.rs` is the only argument parser. Each verb declares a `Spec`: its usage line, its flags (switch, single value, or repeatable; `"--op|--operation"` declares an alias) and how many positionals it takes.
+- The rules are the same everywhere. Flags may come before, between or after positionals, as `--flag value` or `--flag=value`. An unknown flag, an extra positional, a missing value or a single-value flag given twice is an error that names it and prints the verb's usage. `--` ends the flags, so notes that start with `--` can still be recorded, and a lone `-` is positional.
+- `adapter run` keeps its own loop on purpose: everything after `<target>` belongs to the tool (whose adapter parses it strictly), except `--timeout`.
+- `hash` and `scan` take files and free text only, unchanged.
+- Stricter than the shell, which ignores unknown words in several verbs. The conformance scenarios pass only arguments every build accepts, so their output is unchanged.
+
 ### One lock per command, checked after it is taken (review 2026-10-05)
 
 Quality bar item 3 says a mutating command holds the lock for its whole duration. Two places did not:

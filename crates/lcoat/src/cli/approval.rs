@@ -5,9 +5,8 @@ use lcoat_core::operation::Operation;
 use lcoat_core::tier::Tier;
 use lcoat_format::clock::Utc;
 
-use super::{
-    CmdResult, Ctx, fail, first_name, load_active, metadata, mutable_root, need_args, option, root,
-};
+use super::args::{Kind, Spec, parse};
+use super::{CmdResult, Ctx, fail, load_active, metadata, mutable_root, root};
 
 /// Dispatch `approval <verb>`.
 pub fn run(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
@@ -38,27 +37,16 @@ pub fn parse_expiry(v: &str) -> Result<Utc, super::CliError> {
 }
 
 fn grant(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
-    const USAGE: &str =
-        "approval grant <capability> --reason text --expires <YYYY-MM-DD|timestamp|Nh|Nd>";
-    need_args(1, args, USAGE)?;
-    let capability = tier_arg(&args[0])?;
-    let mut reason = String::new();
-    let mut expires: Option<Utc> = None;
-    let rest = &args[1..];
-    let mut i = 0;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "--reason" => {
-                reason = option(rest, i, USAGE)?.to_owned();
-                i += 2;
-            }
-            "--expires" => {
-                expires = Some(parse_expiry(option(rest, i, USAGE)?)?);
-                i += 2;
-            }
-            other => return Err(fail(format!("unknown approval grant option: {other}"))),
-        }
-    }
+    const SPEC: Spec = Spec::new(
+        "approval grant <capability> --reason text --expires <YYYY-MM-DD|timestamp|Nh|Nd>",
+        1,
+        Some(1),
+    )
+    .flags(&[("--reason", Kind::Value), ("--expires", Kind::Value)]);
+    let a = parse(&SPEC, args)?;
+    let capability = tier_arg(a.pos(0))?;
+    let reason = a.value("--reason").unwrap_or("").to_owned();
+    let expires = a.value("--expires").map(parse_expiry).transpose()?;
     if reason.trim().is_empty() {
         return Err(fail("approval reason is required (--reason)"));
     }
@@ -87,8 +75,9 @@ fn grant(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 }
 
 fn list(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
+    let a = parse(&Spec::new("approval list [operation]", 0, Some(1)), args)?;
     let root = root()?;
-    let op = Operation::load_named_or_active(&root, first_name(args))?;
+    let op = Operation::load_named_or_active(&root, a.pos(0))?;
     let file = approval::file(&op.dir);
     ctx.heading("Approvals");
     ctx.rule();
@@ -127,21 +116,11 @@ fn list(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 }
 
 fn revoke(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
-    const USAGE: &str = "approval revoke <capability> --reason text";
-    need_args(1, args, USAGE)?;
-    let capability = tier_arg(&args[0])?;
-    let mut reason = String::new();
-    let rest = &args[1..];
-    let mut i = 0;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "--reason" => {
-                reason = option(rest, i, USAGE)?.to_owned();
-                i += 2;
-            }
-            other => return Err(fail(format!("unknown approval revoke option: {other}"))),
-        }
-    }
+    const SPEC: Spec = Spec::new("approval revoke <capability> --reason text", 1, Some(1))
+        .flags(&[("--reason", Kind::Value)]);
+    let a = parse(&SPEC, args)?;
+    let capability = tier_arg(a.pos(0))?;
+    let reason = a.value("--reason").unwrap_or("").to_owned();
     if reason.trim().is_empty() {
         return Err(fail("revocation reason is required (--reason)"));
     }

@@ -8,7 +8,10 @@ use lcoat_format::clock;
 use lcoat_format::hash::Sha256Hex;
 use lcoat_format::json::{Object, Value};
 
+use super::args::{Kind, Spec, parse};
 use super::{CliError, CmdResult, Ctx, fail};
+
+const JSON: &[(&str, Kind)] = &[("--json", Kind::Switch)];
 
 /// Dispatch `ledger <verb>`.
 pub fn run(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
@@ -28,11 +31,13 @@ pub fn run(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 /// ledger is reported as `unchained`, a Lite-started one as `partial`.
 fn chain_verify(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
     use lcoat_core::chain::{self, ChainStatus};
-    let json = args.iter().any(|a| a == "--json");
-    let names: Vec<String> = args.iter().filter(|a| *a != "--json").cloned().collect();
+    let a = parse(
+        &Spec::new("ledger chain-verify [operation] [--json]", 0, Some(1)).flags(JSON),
+        args,
+    )?;
+    let json = a.has("--json");
     let root = super::root()?;
-    let op =
-        lcoat_core::operation::Operation::load_named_or_active(&root, super::first_name(&names))?;
+    let op = lcoat_core::operation::Operation::load_named_or_active(&root, a.pos(0))?;
     // A missing ledger reads as zero events, which would print as an
     // unchained v1 ledger and exit 0; every operation has `op.started`.
     if !lcoat_core::root::file_exists(&op.ledger_file()) {
@@ -86,6 +91,8 @@ fn chain_verify(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 struct Input {
     path: PathBuf,
     temp: bool,
+    /// The argument as given (`-` for stdin).
+    reference: String,
 }
 
 impl Drop for Input {
@@ -96,18 +103,10 @@ impl Drop for Input {
     }
 }
 
-fn input(args: &[String], usage: &str) -> std::result::Result<(Input, bool), CliError> {
-    let Some(first) = args.first() else {
-        return Err(fail(usage));
-    };
-    let mut json = false;
-    for a in &args[1..] {
-        if a == "--json" {
-            json = true;
-        } else {
-            return Err(fail(format!("unknown ledger option: {a}")));
-        }
-    }
+fn input(args: &[String], usage: &'static str) -> std::result::Result<(Input, bool), CliError> {
+    let a = parse(&Spec::new(usage, 1, Some(1)).flags(JSON), args)?;
+    let json = a.has("--json");
+    let first = a.pos(0);
     if first == "-" {
         let mut buf = Vec::new();
         std::io::Read::read_to_end(&mut std::io::stdin(), &mut buf)?;
@@ -117,7 +116,14 @@ fn input(args: &[String], usage: &str) -> std::result::Result<(Input, bool), Cli
             clock::Utc::now().unix()
         ));
         lcoat_format::envfile::write_private(&path, &buf)?;
-        return Ok((Input { path, temp: true }, json));
+        return Ok((
+            Input {
+                path,
+                temp: true,
+                reference: first.to_owned(),
+            },
+            json,
+        ));
     }
     if !lcoat_core::root::file_exists(Path::new(first)) {
         return Err(fail(format!("missing ledger: {first}")));
@@ -126,6 +132,7 @@ fn input(args: &[String], usage: &str) -> std::result::Result<(Input, bool), Cli
         Input {
             path: PathBuf::from(first),
             temp: false,
+            reference: first.to_owned(),
         },
         json,
     ))
@@ -171,7 +178,7 @@ fn checkpoint(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
         );
         o.insert("timestamp", s(&clock::timestamp()));
         o.insert("metadata_only", Value::Bool(true));
-        o.insert("ledger_ref", s(&args[0]));
+        o.insert("ledger_ref", s(&input.reference));
         o.insert("event_count", Value::Number(res.event_count.to_string()));
         o.insert("head_event_hash", s(res.head_event_hash.as_str()));
         o.insert("ledger_hash", s(file_sha.as_str()));

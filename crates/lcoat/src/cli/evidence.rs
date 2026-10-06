@@ -7,10 +7,8 @@ use lcoat_core::operation::Operation;
 use lcoat_format::canonical::compact;
 use lcoat_format::json::{Object, Value};
 
-use super::{
-    CliError, CmdResult, Ctx, fail, first_name, load_active, load_read_only_op, metadata,
-    mutable_root, need_args, option, root,
-};
+use super::args::{Kind, Spec, parse};
+use super::{CliError, CmdResult, Ctx, fail, load_active, metadata, mutable_root, root};
 
 /// Dispatch `evidence <verb>`.
 pub fn run(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
@@ -40,44 +38,37 @@ pub fn row(r: &evidence::Record) -> String {
 }
 
 fn add(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
-    const USAGE: &str = "evidence add <path> [--kind kind] [--target target] [--classification label] [--redacted true|false]";
-    need_args(1, args, USAGE)?;
-    let mut p = AddParams {
-        source: PathBuf::from(&args[0]),
-        kind: None,
-        target: None,
-        classification: None,
-        redacted: false,
+    const SPEC: Spec = Spec::new(
+        "evidence add <path> [--kind kind] [--target target] [--classification label] [--redacted true|false]",
+        1,
+        Some(1),
+    )
+    .flags(&[
+        ("--kind", Kind::Value),
+        ("--target", Kind::Value),
+        ("--classification", Kind::Value),
+        ("--redacted", Kind::Value),
+    ]);
+    let a = parse(&SPEC, args)?;
+    let scanned = |flag: &str| a.value(flag).map(|v| metadata(flag, v)).transpose();
+    let redacted = match a.value("--redacted") {
+        None | Some("false") => false,
+        Some("true") => true,
+        Some(other) => {
+            return Err(fail(format!(
+                "expected boolean true or false, got: {other}"
+            )));
+        }
+    };
+    let p = AddParams {
+        source: PathBuf::from(a.pos(0)),
+        kind: scanned("--kind")?,
+        target: scanned("--target")?,
+        classification: scanned("--classification")?,
+        redacted,
         tool: String::new(),
         vantage: None,
     };
-    let rest = &args[1..];
-    let mut i = 0;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            flag @ ("--kind" | "--target" | "--classification" | "--redacted") => {
-                let v = option(rest, i, &format!("evidence add <path> {flag} <value>"))?;
-                match flag {
-                    "--kind" => p.kind = Some(metadata(flag, v)?),
-                    "--target" => p.target = Some(metadata(flag, v)?),
-                    "--classification" => p.classification = Some(metadata(flag, v)?),
-                    _ => {
-                        p.redacted = match v {
-                            "true" => true,
-                            "false" => false,
-                            other => {
-                                return Err(fail(format!(
-                                    "expected boolean true or false, got: {other}"
-                                )));
-                            }
-                        }
-                    }
-                }
-                i += 2;
-            }
-            other => return Err(fail(format!("unknown evidence add option: {other}"))),
-        }
-    }
     let root = mutable_root()?;
     let op = load_active(&root, "")?;
     let rec = evidence::add(&op, &p)?;
@@ -91,8 +82,9 @@ fn add(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 }
 
 fn list(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
+    let a = parse(&Spec::new("evidence list [operation]", 0, Some(1)), args)?;
     let root = root()?;
-    let op = load_read_only_op(&root, args, "evidence list [operation]")?;
+    let op = Operation::load_named_or_active(&root, a.pos(0))?;
     let rows = evidence::rows(&op.dir, &op.target, 1_000_000)?;
     if rows.is_empty() {
         ctx.note("no evidence recorded yet");
@@ -105,10 +97,14 @@ fn list(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 }
 
 fn verify(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
-    let json = args.iter().any(|a| a == "--json");
-    let names: Vec<String> = args.iter().filter(|a| *a != "--json").cloned().collect();
+    let a = parse(
+        &Spec::new("evidence verify [operation] [--json]", 0, Some(1))
+            .flags(&[("--json", Kind::Switch)]),
+        args,
+    )?;
+    let json = a.has("--json");
     let root = root()?;
-    let op = Operation::load_named_or_active(&root, first_name(&names))?;
+    let op = Operation::load_named_or_active(&root, a.pos(0))?;
     let (checks, problems) = evidence::verify_artifacts(&op.dir)?;
     let status = if problems > 0 {
         "attention-required"
@@ -193,31 +189,16 @@ fn diff(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
     use lcoat_adapters::nmap::{compare, summarize};
     use lcoat_format::hash::Sha256Hex;
 
-    const USAGE: &str = "evidence diff <before-id> <after-id> [--op operation] [--json]";
-    let mut ids: Vec<&str> = Vec::new();
-    let mut op_name = "";
-    let mut json = false;
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--json" => {
-                json = true;
-                i += 1;
-            }
-            "--op" | "--operation" => {
-                op_name = option(args, i, USAGE)?;
-                i += 2;
-            }
-            a if a.starts_with('-') => return Err(fail(format!("usage: {USAGE}"))),
-            a => {
-                ids.push(a);
-                i += 1;
-            }
-        }
-    }
-    let [before_id, after_id] = ids[..] else {
-        return Err(fail(format!("usage: {USAGE}")));
-    };
+    const SPEC: Spec = Spec::new(
+        "evidence diff <before-id> <after-id> [--op operation] [--json]",
+        2,
+        Some(2),
+    )
+    .flags(&[("--op|--operation", Kind::Value), ("--json", Kind::Switch)]);
+    let a = parse(&SPEC, args)?;
+    let (before_id, after_id) = (a.pos(0), a.pos(1));
+    let op_name = a.value("--op").unwrap_or("");
+    let json = a.has("--json");
     let root = root()?;
     let op = Operation::load_named_or_active(&root, op_name)?;
     let records = evidence::latest(&op.dir, "")?;

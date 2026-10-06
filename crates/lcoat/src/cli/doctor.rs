@@ -11,7 +11,8 @@ use lcoat_core::doctor::{self, Report, Status};
 use lcoat_format::canonical::compact;
 use lcoat_format::json::{Object, Value};
 
-use super::{CliError, CmdResult, Ctx, fail};
+use super::args::{Kind, Spec, parse};
+use super::{CliError, CmdResult, Ctx};
 
 /// Tools the adapters drive (Tier 0-2 nmap; the script adapter runs
 /// whatever the operator names, so there is nothing fixed to check).
@@ -19,17 +20,11 @@ const SECTION_TOOLS: &str = "Tools";
 
 /// `doctor [--json]`.
 pub fn run(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
-    let mut json = false;
-    for a in args {
-        match a.as_str() {
-            "--json" => json = true,
-            other => {
-                return Err(fail(format!(
-                    "unknown doctor option: {other}\nusage: lcoat doctor [--json]"
-                )));
-            }
-        }
-    }
+    let json = parse(
+        &Spec::new("doctor [--json]", 0, Some(0)).flags(&[("--json", Kind::Switch)]),
+        args,
+    )?
+    .has("--json");
 
     let euid = doctor::effective_uid();
     let mut report = doctor::check(euid);

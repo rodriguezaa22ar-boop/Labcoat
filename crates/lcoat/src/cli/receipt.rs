@@ -4,7 +4,10 @@ use lcoat_core::receipt::{self, CreateParams};
 use lcoat_format::canonical::compact;
 use lcoat_format::json::Value;
 
-use super::{CmdResult, Ctx, fail, need_args, option};
+use super::args::{Kind, Spec, parse};
+use super::{CmdResult, Ctx, fail};
+
+const JSON: &[(&str, Kind)] = &[("--json", Kind::Switch)];
 
 /// Dispatch `receipt <verb>`.
 pub fn run(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
@@ -20,16 +23,12 @@ pub fn run(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 }
 
 fn verify(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
-    need_args(1, args, "receipt verify <receipt-file|-> [--json]")?;
-    let mut json = false;
-    for a in &args[1..] {
-        if a == "--json" {
-            json = true;
-        } else {
-            return Err(fail(format!("unknown receipt verify option: {a}")));
-        }
-    }
-    let res = receipt::verify_file(&args[0])?;
+    let a = parse(
+        &Spec::new("receipt verify <receipt-file|-> [--json]", 1, Some(1)).flags(JSON),
+        args,
+    )?;
+    let json = a.has("--json");
+    let res = receipt::verify_file(a.pos(0))?;
     if json {
         let mut bytes = compact(&Value::Object(res.to_json()));
         bytes.push(b'\n');
@@ -43,23 +42,17 @@ fn verify(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 }
 
 fn replay(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
-    let mut json = false;
-    let mut inputs: Vec<String> = Vec::new();
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--json" => json = true,
-            "--" => {
-                inputs.extend(args[i + 1..].iter().cloned());
-                break;
-            }
-            a if a.len() > 1 && a.starts_with('-') => {
-                return Err(fail(format!("unknown receipt replay option: {a}")));
-            }
-            a => inputs.push(a.to_owned()),
-        }
-        i += 1;
-    }
+    let a = parse(
+        &Spec::new(
+            "receipt replay <receipt-file> [receipt-file ...] [--json]",
+            0,
+            None,
+        )
+        .flags(JSON),
+        args,
+    )?;
+    let json = a.has("--json");
+    let inputs = a.pos.clone();
     let res = receipt::replay(&inputs)?;
     if json {
         let mut bytes = compact(&Value::Object(res.to_json()));
@@ -85,40 +78,44 @@ fn replay(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 }
 
 fn create(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
-    let mut p = CreateParams::default();
-    let mut out_file = String::new();
-    let mut json = false;
-    let mut i = 0;
-    while i < args.len() {
-        let flag = args[i].as_str();
-        match flag {
-            "--receipt-id" | "--timestamp" | "--action" | "--actor" | "--subject-type"
-            | "--subject" | "--prev-hash" | "--evidence-ref" | "--artifact-ref"
-            | "--approval-ref" | "--limitation" | "--out" => {
-                let v = option(args, i, &format!("receipt create {flag} <value>"))?.to_owned();
-                match flag {
-                    "--receipt-id" => p.receipt_id = v,
-                    "--timestamp" => p.timestamp = v,
-                    "--action" => p.action = v,
-                    "--actor" => p.actor = v,
-                    "--subject-type" => p.subject_type = v,
-                    "--subject" => p.subject_ref = v,
-                    "--prev-hash" => p.prev_hash = v,
-                    "--evidence-ref" => p.evidence_refs.push(v),
-                    "--artifact-ref" => p.artifact_refs.push(v),
-                    "--approval-ref" => p.approval_refs.push(v),
-                    "--limitation" => p.limitations.push(v),
-                    _ => out_file = v,
-                }
-                i += 2;
-            }
-            "--json" => {
-                json = true;
-                i += 1;
-            }
-            other => return Err(fail(format!("unknown receipt create option: {other}"))),
-        }
-    }
+    const SPEC: Spec = Spec::new(
+        "receipt create --action action --actor actor --subject-type type --subject ref [--prev-hash sha256] [--evidence-ref ref] [--artifact-ref path=sha256] [--approval-ref ref] [--limitation text] [--out receipt.json] [--json]",
+        0,
+        Some(0),
+    )
+    .flags(&[
+        ("--receipt-id", Kind::Value),
+        ("--timestamp", Kind::Value),
+        ("--action", Kind::Value),
+        ("--actor", Kind::Value),
+        ("--subject-type", Kind::Value),
+        ("--subject", Kind::Value),
+        ("--prev-hash", Kind::Value),
+        ("--evidence-ref", Kind::Many),
+        ("--artifact-ref", Kind::Many),
+        ("--approval-ref", Kind::Many),
+        ("--limitation", Kind::Many),
+        ("--out", Kind::Value),
+        ("--json", Kind::Switch),
+    ]);
+    let a = parse(&SPEC, args)?;
+    let one = |f: &str| a.value(f).unwrap_or("").to_owned();
+    let many = |f: &str| a.values(f).into_iter().map(str::to_owned).collect();
+    let p = CreateParams {
+        receipt_id: one("--receipt-id"),
+        timestamp: one("--timestamp"),
+        action: one("--action"),
+        actor: one("--actor"),
+        subject_type: one("--subject-type"),
+        subject_ref: one("--subject"),
+        prev_hash: one("--prev-hash"),
+        evidence_refs: many("--evidence-ref"),
+        artifact_refs: many("--artifact-ref"),
+        approval_refs: many("--approval-ref"),
+        limitations: many("--limitation"),
+    };
+    let out_file = one("--out");
+    let json = a.has("--json");
     let body = receipt::create(&p)?;
     if out_file.is_empty() {
         ctx.raw(&body);

@@ -1,10 +1,13 @@
 //! `scope status`.
 
-use lcoat_core::root::{LabRoot, TOOL_NAME};
+use lcoat_core::root::TOOL_NAME;
 use lcoat_core::scope::snapshot_file;
 use lcoat_core::tier::Tier;
 
-use super::{CmdResult, Ctx, fail, load_active, load_read_only_op, mutable_root, need_args, root};
+use lcoat_core::operation::Operation;
+
+use super::args::{Spec, parse};
+use super::{CmdResult, Ctx, fail, load_active, mutable_root, root};
 
 /// Dispatch `scope <verb>`.
 pub fn run(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
@@ -14,7 +17,7 @@ pub fn run(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
         ));
     };
     match verb.as_str() {
-        "status" => status(ctx, &root()?, rest),
+        "status" => status(ctx, rest),
         "check" => check(ctx, rest),
         other => Err(fail(format!("unknown scope command: {other}"))),
     }
@@ -23,21 +26,24 @@ pub fn run(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
 /// `scope check <capability> <target>`: a manual preflight, recorded in
 /// the ledger like any other, against the active operation.
 fn check(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
-    need_args(2, args, "scope check <capability> <target>")?;
-    let Some(capability) = Tier::from_capability(&args[0]) else {
+    let a = parse(
+        &Spec::new("scope check <capability> <target>", 2, Some(2)),
+        args,
+    )?;
+    let Some(capability) = Tier::from_capability(a.pos(0)) else {
         return Err(fail(format!(
             "unknown capability: {} (read-only, passive-recon, active-recon, safe-validation, intrusive-validation, destructive)",
-            args[0]
+            a.pos(0)
         )));
     };
     let root = mutable_root()?;
     let op = load_active(&root, "")?;
-    op.preflight(capability, TOOL_NAME, &args[1], "manual scope check")?
+    op.preflight(capability, TOOL_NAME, a.pos(1), "manual scope check")?
         .into_result()?;
     ctx.ok("scope allowed");
     ctx.kv("capability", capability.capability());
     ctx.kv("tier", &(capability as u8).to_string());
-    ctx.kv("target", &args[1]);
+    ctx.kv("target", a.pos(1));
     Ok(())
 }
 
@@ -45,8 +51,10 @@ fn or_unknown(s: &str) -> &str {
     if s.is_empty() { "unknown" } else { s }
 }
 
-fn status(ctx: &mut Ctx<'_>, root: &LabRoot, args: &[String]) -> CmdResult {
-    let op = load_read_only_op(root, args, "scope status [operation]")?;
+fn status(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
+    let a = parse(&Spec::new("scope status [operation]", 0, Some(1)), args)?;
+    let root = root()?;
+    let op = Operation::load_named_or_active(&root, a.pos(0))?;
     let snap = op.snapshot()?;
     ctx.heading("ScopeGuard");
     ctx.rule();

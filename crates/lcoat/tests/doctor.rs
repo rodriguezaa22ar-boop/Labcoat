@@ -289,5 +289,5 @@ fn json_carries_every_row_and_the_counts() {
 fn unknown_options_are_refused() {
     let o = cmd(None, &["doctor", "--deep"]);
     assert!(!o.status.success());
-    assert!(String::from_utf8_lossy(&o.stderr).contains("unknown doctor option: --deep"));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("unknown option: --deep"));
 }

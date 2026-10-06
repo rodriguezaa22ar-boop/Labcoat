@@ -2,7 +2,8 @@
 
 use lcoat_core::scope::{self, DEFAULT_SUMMARY, Snapshot, load_profile};
 
-use super::{CmdResult, Ctx, fail, need_args, root};
+use super::args::{Spec, parse};
+use super::{CmdResult, Ctx, fail, root};
 
 /// Dispatch `profile <verb>`.
 pub fn run(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
@@ -10,13 +11,14 @@ pub fn run(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
         return Err(fail("profile list|show <name>"));
     };
     match verb.as_str() {
-        "list" => list(ctx),
+        "list" => list(ctx, rest),
         "show" => show(ctx, rest),
         other => Err(fail(format!("unknown profile command: {other}"))),
     }
 }
 
-fn list(ctx: &mut Ctx<'_>) -> CmdResult {
+fn list(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
+    parse(&Spec::new("profile list", 0, Some(0)), args)?;
     let root = root()?;
     ctx.line(&format!("{:<24} {}", "PROFILE", "SUMMARY"));
     ctx.line(&format!("{:<24} {}", "default", DEFAULT_SUMMARY));
@@ -32,9 +34,9 @@ fn list(ctx: &mut Ctx<'_>) -> CmdResult {
 }
 
 fn show(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
-    need_args(1, args, "profile show <name>")?;
+    let a = parse(&Spec::new("profile show <name>", 1, Some(1)), args)?;
     let root = root()?;
-    let p = load_profile(&root.profiles_dir, &args[0])?;
+    let p = load_profile(&root.profiles_dir, a.pos(0))?;
     ctx.heading("Atlas Profile");
     ctx.rule();
     ctx.kv("Profile", &p.name);

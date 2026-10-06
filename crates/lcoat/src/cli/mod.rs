@@ -17,6 +17,7 @@ use lcoat_core::root::LabRoot;
 
 mod adapter;
 mod approval;
+mod args;
 mod doctor;
 mod evidence;
 mod finding;
@@ -36,7 +37,7 @@ pub const USAGE: &str = "usage:
   lcoat help
   lcoat version
   lcoat doctor [--json]
-  lcoat target add <name> <address> [--scope-status status] [--criticality level] [--tag tag] [--owner owner] [notes...]
+  lcoat target add <name> <address> [--scope-status status] [--criticality level] [--tag tag]... [--owner owner] [notes...]
   lcoat target show <name>
   lcoat target list
   lcoat profile list
@@ -87,6 +88,9 @@ pub const USAGE: &str = "usage:
   lcoat hash <file>...
   lcoat scan <file.json>... | lcoat scan --text <string>
 
+Flags may come before or after the other arguments, as --flag value or
+--flag=value; an unknown flag or an extra argument is an error, and --
+ends the flags (adapter run passes everything after <target> to the tool).
 The lab root comes from LCOAT_ROOT (or LAB_ROOT). Read-only commands never
 create it; mutating commands create the layout once. Tiers: 0-2 run under
 the scope profile, 3 needs 'approval grant', 4 and 5 are refused.
@@ -163,7 +167,8 @@ pub fn fail(msg: impl Into<String>) -> CliError {
     CliError::Core(Error::user(msg))
 }
 
-/// `need_args`.
+/// `need_args` (for `adapter run`, whose tool arguments pass through).
+#[cfg(feature = "adapters")]
 pub fn need_args(min: usize, args: &[String], usage: &str) -> CmdResult {
     if args.len() < min {
         Err(fail(usage))
@@ -173,6 +178,7 @@ pub fn need_args(min: usize, args: &[String], usage: &str) -> CmdResult {
 }
 
 /// Read a flag value, failing with `usage` when missing.
+#[cfg(feature = "adapters")]
 pub fn option<'a>(
     args: &'a [String],
     i: usize,
@@ -260,7 +266,6 @@ pub fn metadata(
         .map_err(|e| fail(format!("{flag}: refusing to record this text: {e}")))
 }
 
-/// `[name]` then the flags: the first non-flag argument names the operation.
 /// One argument quoted for bash and zsh, for the `next:` lines commands
 /// print: plain words stay bare, anything else is single-quoted with `'`
 /// written as `'\''`. Field run 1: placeholders like `<target>` in pasted
@@ -279,22 +284,6 @@ pub fn shell_word(s: &str) -> String {
 pub fn next(ctx: &mut Ctx<'_>, words: &[&str]) {
     let line: Vec<String> = words.iter().map(|w| shell_word(w)).collect();
     ctx.line(&format!("next: lcoat {}", line.join(" ")));
-}
-
-pub fn first_name(args: &[String]) -> &str {
-    args.first()
-        .filter(|a| !a.starts_with('-'))
-        .map(String::as_str)
-        .unwrap_or("")
-}
-
-/// `[name] [second]`: the first two non-flag arguments.
-pub fn two_names(args: &[String]) -> (&str, &str) {
-    let mut names = args
-        .iter()
-        .filter(|a| !a.starts_with('-'))
-        .map(String::as_str);
-    (names.next().unwrap_or(""), names.next().unwrap_or(""))
 }
 
 /// The active operation (or the named one) as `Active`, for writers.
@@ -323,33 +312,6 @@ pub fn load_closed(
         )));
     }
     Ok(Operation::load_named_or_active(root, name)?.into_closed()?)
-}
-
-/// `[name]` or nothing: the first non-flag argument names the operation.
-pub fn load_op(
-    root: &LabRoot,
-    args: &[String],
-) -> std::result::Result<lcoat_core::operation::Operation, CliError> {
-    let name = args
-        .first()
-        .filter(|a| !a.starts_with('-'))
-        .map(String::as_str)
-        .unwrap_or("");
-    Ok(lcoat_core::operation::Operation::load_named_or_active(
-        root, name,
-    )?)
-}
-
-/// `[operation]` only: more than one argument, or a flag, is a usage error.
-pub fn load_read_only_op(
-    root: &LabRoot,
-    args: &[String],
-    usage: &str,
-) -> std::result::Result<lcoat_core::operation::Operation, CliError> {
-    if args.len() > 1 || args.first().is_some_and(|a| a.starts_with('-')) {
-        return Err(fail(format!("usage: {usage}")));
-    }
-    load_op(root, args)
 }
 
 #[cfg(test)]
