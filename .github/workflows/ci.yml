@@ -87,7 +87,8 @@ jobs:
           GO_PROJECT: ${{ github.workspace }}/GO-project
 
   release-builds:
-    name: static builds
+    # Linux binaries are static (musl); the macOS one links libSystem.
+    name: release builds
     needs: check
     strategy:
       matrix:

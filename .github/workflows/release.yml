@@ -1,0 +1,121 @@
+name: release
+
+# Runs when a `v*` tag is pushed. Builds each binary twice from different
+# directories and refuses to continue unless the two are byte-identical,
+# then makes a *draft* GitHub release with the binaries, one combined
+# SHA256SUMS, a CycloneDX SBOM and build provenance attestations. Publishing
+# the draft stays a human decision; signatures (minisign) come in phase 4.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build ${{ matrix.target }} (twice)
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: tag matches the workspace version
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME does not match workspace version $version" >&2; exit 1; }
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - if: contains(matrix.target, 'aarch64-unknown-linux')
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: build in two directories and compare
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          second="$RUNNER_TEMP/rebuild"
+          cp -R "$GITHUB_WORKSPACE" "$second"
+          build() { # dir
+            ( cd "$1" && RUSTFLAGS="--remap-path-prefix=$1=/lcoat --remap-path-prefix=$HOME/.cargo=/cargo --remap-path-prefix=$HOME/.rustup=/rustup" \
+                cargo build --release --locked --target "$TARGET" -p lcoat )
+          }
+          build "$GITHUB_WORKSPACE"
+          build "$second"
+          a="target/$TARGET/release/lcoat"
+          if ! cmp "$a" "$second/$a"; then
+            shasum -a 256 "$a" "$second/$a"
+            echo "the two builds differ: not reproducible" >&2
+            exit 1
+          fi
+          # A release binary carries no crash points.
+          if grep -q "injected crash" "$a"; then echo "crash hook compiled into $a" >&2; exit 1; fi
+          mkdir -p dist
+          cp "$a" "dist/lcoat-$TARGET"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lcoat-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: draft release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: stable
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: dist
+          pattern: lcoat-*
+          merge-multiple: true
+      - name: SBOM and checksums
+        run: |
+          set -euo pipefail
+          cargo metadata --format-version 1 --locked \
+            | jq --arg uuid "$(uuidgen | tr 'A-Z' 'a-z')" --arg ts "$(git log -1 --format=%cI)" \
+                 -f .github/release/sbom.jq > dist/lcoat.cdx.json
+          (cd dist && sha256sum lcoat-* lcoat.cdx.json > SHA256SUMS)
+          cat dist/SHA256SUMS
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: |
+            dist/lcoat-*
+            dist/lcoat.cdx.json
+      - name: create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
+            --title "Lab Coat $GITHUB_REF_NAME" \
+            --notes "Draft created by the release workflow. Binaries were built twice from different directories and compared byte for byte. Check with: sha256sum -c SHA256SUMS; gh attestation verify lcoat-<target> --repo $GITHUB_REPOSITORY" \
+            dist/*
