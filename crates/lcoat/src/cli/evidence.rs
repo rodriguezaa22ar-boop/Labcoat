@@ -131,6 +131,9 @@ fn verify(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
                         a.insert("status", s(c.status));
                         a.insert("expected_sha256", s(&c.expected));
                         a.insert("actual_sha256", s(&c.actual));
+                        if !c.detail.is_empty() {
+                            a.insert("detail", s(&c.detail));
+                        }
                         Value::Object(a)
                     })
                     .collect(),
@@ -155,6 +158,9 @@ fn verify(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
                 " expected_sha={} actual_sha={}",
                 c.expected, c.actual
             ));
+        }
+        if !c.detail.is_empty() {
+            detail.push_str(&format!(" ({})", c.detail));
         }
         ctx.line(&format!("{:<26} {:<9} {detail}", c.id, c.status));
     }

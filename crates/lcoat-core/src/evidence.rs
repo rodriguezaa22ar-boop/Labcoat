@@ -359,51 +359,183 @@ pub struct ArtifactCheck {
     pub id: String,
     /// Stored path relative to the operation directory.
     pub path: String,
-    /// `verified`, `changed` or `missing`.
+    /// `verified`, `changed`, `missing`, or one of the cross-check
+    /// verdicts: `unindexed` (the manifest or ledger records an artifact
+    /// the index no longer lists), `conflict` (the index's hash or path
+    /// disagrees with the manifest, the ledger or an earlier index record
+    /// for the same ID), `unsafe` (a stored path outside the operation).
     pub status: &'static str,
     /// Recorded sha256.
     pub expected: String,
     /// Current sha256 (empty when missing).
     pub actual: String,
+    /// What disagrees with what, for the cross-check verdicts.
+    pub detail: String,
+}
+
+/// A stored path is relative and has no `..`, so it stays inside the
+/// operation directory.
+fn safe_relative(path: &str) -> bool {
+    let p = Path::new(path);
+    !path.is_empty()
+        && !p.is_absolute()
+        && p.components().all(|c| {
+            matches!(
+                c,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        })
+}
+
+/// `evidence=<id> ... sha256=<hash>` from an `artifact.created` detail
+/// (the same in the shell, Lite and Lab Coat).
+fn created_event(detail: &str) -> Option<(String, String, String)> {
+    let mut id = None;
+    let mut sha = None;
+    let mut path = String::new();
+    for tok in detail.split_whitespace() {
+        if let Some(v) = tok.strip_prefix("evidence=") {
+            id = Some(v.to_owned());
+        } else if let Some(v) = tok.strip_prefix("sha256=") {
+            sha = Some(v.to_owned());
+        } else if let Some(v) = tok.strip_prefix("path=") {
+            v.clone_into(&mut path);
+        }
+    }
+    Some((id?, sha?, path))
 }
 
 /// Re-hash every stored evidence artifact and compare with the sha256
-/// recorded at capture. The packet verifiers anchor the index file; this
-/// anchors the bytes the index points at. Returns the checks and the
-/// number of problems.
+/// recorded at capture, then cross-check the three places a capture is
+/// recorded: the index (`evidence.ndjson`), the format 1.1 manifest and the
+/// ledger's `artifact.created` events. The index alone used to be trusted,
+/// so emptying it gave `verified, checked 0`, and appending a newer record
+/// for an ID with a new hash re-blessed an edited artifact (review
+/// 2026-10-05). Shell- and Lite-written operations have no manifest; their
+/// ledger still names every capture. Returns the checks and the number of
+/// problems.
 pub fn verify_artifacts(op_dir: &Path) -> Result<(Vec<ArtifactCheck>, usize)> {
     let mut out = Vec::new();
-    let mut problems = 0;
-    for r in latest(op_dir, "")? {
+    let all = ndjson::read_file(&index_file(op_dir))?;
+    let latest_recs = latest(op_dir, "")?;
+    let check = |id: &str, path: &str, status, expected: &str, detail: String| ArtifactCheck {
+        id: id.to_owned(),
+        path: path.to_owned(),
+        status,
+        expected: expected.to_owned(),
+        actual: String::new(),
+        detail,
+    };
+
+    for r in &latest_recs {
         let full = op_dir.join(&r.path);
-        let mut c = ArtifactCheck {
-            id: r.id,
-            path: r.path.clone(),
-            status: "missing",
-            expected: r.sha256,
-            actual: String::new(),
-        };
-        if Path::new(&r.path).is_absolute() || !file_exists(&full) {
-            problems += 1;
+        if !safe_relative(&r.path) {
+            out.push(check(
+                &r.id,
+                &r.path,
+                "unsafe",
+                &r.sha256,
+                "stored path leaves the operation directory".to_owned(),
+            ));
+            continue;
+        }
+        // Every record for this ID must name the same bytes; a redaction
+        // adds `redacted_*` fields and keeps `path` and `sha256`.
+        if let Some(prev) = all.iter().find(|o| {
+            o.str("id") == r.id && (o.str("sha256") != r.sha256 || o.str("path") != r.path)
+        }) {
+            out.push(check(
+                &r.id,
+                &r.path,
+                "conflict",
+                &r.sha256,
+                format!(
+                    "an earlier index record has sha256={} path={}",
+                    prev.str("sha256"),
+                    prev.str("path")
+                ),
+            ));
+            continue;
+        }
+        let mut c = check(&r.id, &r.path, "missing", &r.sha256, String::new());
+        if !file_exists(&full) {
             out.push(c);
             continue;
         }
         let sum = Sha256Hex::of_file(&full)?;
         c.actual = sum.as_str().to_owned();
-        if c.actual == c.expected {
-            c.status = "verified";
+        c.status = if c.actual == c.expected {
+            "verified"
         } else {
-            c.status = "changed";
-            problems += 1;
-        }
+            "changed"
+        };
         out.push(c);
     }
+
+    let indexed = |id: &str| latest_recs.iter().find(|r| r.id == id);
+    let mut cross = |id: &str, path: &str, sha: &str, source: &str| {
+        if out.iter().any(|c| c.id == id && c.status != "verified") {
+            return;
+        }
+        match indexed(id) {
+            None => out.push(check(
+                id,
+                path,
+                "unindexed",
+                sha,
+                format!("recorded by the {source}, absent from the index"),
+            )),
+            Some(r) if r.sha256 != sha => {
+                out.retain(|c| c.id != id);
+                out.push(check(
+                    id,
+                    &r.path,
+                    "conflict",
+                    &r.sha256,
+                    format!("the {source} recorded sha256={sha}"),
+                ));
+            }
+            Some(_) => {}
+        }
+    };
+    for m in manifest(op_dir)? {
+        cross(&m.id, &m.path, &m.sha256, "manifest");
+    }
+    for e in crate::ledger::read(op_dir)? {
+        if e.event == "artifact.created"
+            && let Some((id, sha, path)) = created_event(&e.detail)
+        {
+            cross(&id, &path, &sha, "ledger");
+        }
+    }
+
+    let problems = out.iter().filter(|c| c.status != "verified").count();
     Ok((out, problems))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stored_paths_stay_inside_and_created_events_parse() {
+        assert!(safe_relative("evidence/ev_1/a.txt"));
+        assert!(safe_relative("./evidence/a"));
+        for bad in [
+            "",
+            "/etc/passwd",
+            "../x",
+            "evidence/../../x",
+            "evidence/ev_1/..",
+        ] {
+            assert!(!safe_relative(bad), "{bad}");
+        }
+        assert_eq!(
+            created_event("evidence=ev_1 kind=scan-output sha256=ab path=evidence/ev_1/r.txt"),
+            Some(("ev_1".into(), "ab".into(), "evidence/ev_1/r.txt".into()))
+        );
+        assert_eq!(created_event("kind=x sha256=ab"), None);
+    }
 
     #[test]
     fn rows_sort_newest_first_and_verify_catches_edits() {
