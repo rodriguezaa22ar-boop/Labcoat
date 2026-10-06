@@ -58,6 +58,7 @@ pub const USAGE: &str = "usage:
   lcoat op audit-verify [name] [audit-packet] [--json]
   lcoat op archive-verify [name] [archive-packet] [--json]
   lcoat op trust-chain [name] [--strict] [--json]
+  lcoat op repair-tail [name]
   lcoat scope status [operation]
   lcoat scope check <capability> <target>
   lcoat approval grant <capability> --reason text --expires <YYYY-MM-DD|timestamp|Nh|Nd>

@@ -226,6 +226,14 @@ Strictly read-only: nothing is created, opened for writing or locked under the r
 - A release binary that sees either variable set prints `warning: LCOAT_NOW is ignored: release builds always use the system clock` on stderr, so a stale export is visible rather than silently obeyed or silently dropped. `lcoat doctor` also warns when either is set.
 - A deliberate divergence from the shell, which honours `ATLAS_TODAY` everywhere. The conformance scenario runs debug builds and is unchanged.
 
+### A torn record is refused, then repaired on purpose (review 2026-10-05)
+
+An append that a crash interrupts can leave the last line of an NDJSON file half-written. Gluing the next record onto it loses both, and a torn ledger tail made every later write fail with no recovery command.
+
+- Every append (`fsutil::append_locked`, `Ledger::append`) checks, under the file lock, that the file ends in a newline. If it does not, nothing is written and the error names the file, the fragment's size and `lcoat op repair-tail`.
+- `lcoat op repair-tail [name]` takes the operation lock and, for each of `approvals.ndjson`, `evidence.ndjson`, `evidence/manifest.ndjson`, `findings.ndjson`, `notes/history.log` and `ledger.ndjson` (the ledger last), moves the bytes after the last newline to `repaired/<file>.<timestamp>.torn` (0600) and truncates the file to its last complete record. It then appends one `op.tail-repaired` event per file (`file= bytes= sha256= kept=`). Complete records are never changed, so a chain that verified before the crash verifies after the repair; the shell build and Lite read the event as any other.
+- A repair is a decision the operator makes and the ledger shows, never something a write does silently.
+
 ### Fuzzing (after phase 2)
 
 Thirteen targets, each a function in `crates/lcoat-fuzz/src/targets.rs` that feeds bytes to a parser the way the binary does and asserts what makes the parser safe to trust, not only that it does not panic:

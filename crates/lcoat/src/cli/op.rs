@@ -25,7 +25,7 @@ use super::{
 pub fn run(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
     let Some((verb, rest)) = args.split_first() else {
         return Err(fail(
-            "op start|resume|list|status|show|brief|readiness|close|report|handoff|closeout|audit-packet|archive-packet|verify|audit-verify|archive-verify|trust-chain",
+            "op start|resume|list|status|show|brief|readiness|close|report|handoff|closeout|audit-packet|archive-packet|verify|audit-verify|archive-verify|trust-chain|repair-tail",
         ));
     };
     match verb.as_str() {
@@ -46,6 +46,7 @@ pub fn run(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
         "audit-verify" => verify(ctx, rest, "audit"),
         "archive-verify" => verify(ctx, rest, "archive"),
         "trust-chain" => trust_chain(ctx, rest),
+        "repair-tail" => repair_tail(ctx, rest),
         "audit" | "archive" => Err(fail(format!(
             "op {verb} (the printed summary) is not in this build; use 'op {verb}-packet' and 'op trust-chain'"
         ))),
@@ -435,6 +436,36 @@ fn brief(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
     for l in b.lines() {
         ctx.line(&l);
     }
+    Ok(())
+}
+
+/// `op repair-tail [name]`: set aside half-written records left by an
+/// interrupted append (see `lcoat_core::repair`).
+fn repair_tail(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
+    let root = root()?;
+    let op = load_any(&root, args)?;
+    let done = lcoat_core::repair::repair_tails(&op)?;
+    if done.is_empty() {
+        ctx.line(&format!(
+            "nothing to repair: every record file of '{}' ends in a complete record",
+            op.slug
+        ));
+        return Ok(());
+    }
+    for r in &done {
+        ctx.line(&format!(
+            "repaired: {} ({} bytes set aside, sha256 {}) kept as {}",
+            r.file,
+            r.bytes,
+            r.sha256.as_str(),
+            r.kept
+        ));
+    }
+    ctx.line(&format!(
+        "recorded: {} {} event(s) in the ledger",
+        done.len(),
+        lcoat_core::repair::EVENT
+    ));
     Ok(())
 }
 
