@@ -1028,6 +1028,105 @@ fn a_target_address_must_name_exactly_one_host() {
     assert!(e.contains("has no address recorded"), "{e}");
 }
 
+/// Review 2026-10-05: `evidence verify` trusted the index alone. Emptying
+/// it gave `verified, checked 0`; a newer index record with a new hash
+/// re-blessed an edited artifact; a `..` path was followed. The index is
+/// now cross-checked against the manifest and the ledger.
+#[test]
+fn evidence_verify_cross_checks_index_manifest_and_ledger() {
+    let root = fresh("ev-cross");
+    std::fs::write(root.join("scan.txt"), b"22/tcp open ssh\n").unwrap();
+    ok(&lcoat(
+        &root,
+        &[
+            "target",
+            "add",
+            "box",
+            "127.0.0.1",
+            "--scope-status",
+            "in-scope",
+        ],
+    ));
+    ok(&lcoat(&root, &["op", "start", "demo", "box"]));
+    let added = ok(&lcoat(
+        &root,
+        &["evidence", "add", root.join("scan.txt").to_str().unwrap()],
+    ));
+    let id = kv(&added, "id");
+    assert!(id.starts_with("ev_"), "{added}");
+    let op = root.join("sessions/demo");
+    let index = op.join("evidence.ndjson");
+    let original = std::fs::read_to_string(&index).unwrap();
+    ok(&lcoat(&root, &["evidence", "verify", "demo"]));
+
+    let verdict = |root: &Path| {
+        let out = lcoat(root, &["evidence", "verify", "demo"]);
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+
+    // 1. Emptied index: the manifest and the ledger still name the capture.
+    std::fs::write(&index, "").unwrap();
+    let text = verdict(&root);
+    assert!(text.contains(&id) && text.contains("unindexed"), "{text}");
+    assert!(
+        text.contains("recorded by the manifest, absent from the index"),
+        "{text}"
+    );
+    assert_eq!(kv(&text, "Verification Status"), "attention-required");
+
+    // 2. Edit the artifact, then append a newer index record blessing it.
+    std::fs::write(&index, &original).unwrap();
+    let artifact = op.join(format!("evidence/{id}/scan.txt"));
+    std::fs::write(&artifact, b"nothing open\n").unwrap();
+    let new_sha = ok(&lcoat(&root, &["hash", artifact.to_str().unwrap()]))
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_owned();
+    let old_sha = kv(&added, "sha256");
+    assert!(!old_sha.is_empty(), "{added}");
+    let last = original.lines().last().unwrap().replace(&old_sha, &new_sha);
+    std::fs::write(&index, format!("{original}{last}\n")).unwrap();
+    let text = verdict(&root);
+    assert!(text.contains("conflict"), "{text}");
+    assert!(
+        text.contains(&format!("an earlier index record has sha256={old_sha}")),
+        "{text}"
+    );
+
+    // 3. Rewrite the only record instead: the manifest disagrees.
+    std::fs::write(&index, original.replace(&old_sha, &new_sha)).unwrap();
+    let text = verdict(&root);
+    assert!(
+        text.contains(&format!("the manifest recorded sha256={old_sha}")),
+        "{text}"
+    );
+
+    // 4. A stored path that leaves the operation directory.
+    std::fs::write(
+        &index,
+        original.replace(&format!("evidence/{id}/scan.txt"), "../../../etc/hostname"),
+    )
+    .unwrap();
+    let text = verdict(&root);
+    assert!(
+        text.contains("unsafe") && text.contains("leaves the operation directory"),
+        "{text}"
+    );
+
+    // Restored, everything verifies again.
+    std::fs::write(&index, &original).unwrap();
+    std::fs::write(&artifact, b"22/tcp open ssh\n").unwrap();
+    ok(&lcoat(&root, &["evidence", "verify", "demo"]));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// Review 2026-10-05: a ledger event edited before any packet existed was
 /// anchored by every packet written afterwards, and `op trust-chain
 /// --strict` said `current` (exit 0) while its own `Ledger Chain` line said
