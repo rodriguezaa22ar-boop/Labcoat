@@ -367,6 +367,10 @@ impl Adapter for Nmap {
 
     /// `nmap <args> -oX - <address>`: XML on stdout, address last and from
     /// the scope only.
+    fn ipv6(&self, args: &[String]) -> bool {
+        NmapArg::parse_all(args).is_ok_and(|p| p.contains(&NmapArg::Bare(BareFlag::Six)))
+    }
+
     fn command(&self, target: &ScopedTarget, args: &[String]) -> Result<Vec<String>> {
         let parsed = NmapArg::parse_all(args)?;
         let address = target.address();
@@ -376,6 +380,11 @@ impl Adapter for Nmap {
         let mut argv = vec!["nmap".to_owned()];
         for a in &parsed {
             argv.extend(a.argv());
+        }
+        // The runner pinned the address to the IP it recorded; `-n` keeps
+        // nmap from doing DNS of its own (no reverse lookups either).
+        if !parsed.contains(&NmapArg::Bare(BareFlag::N)) {
+            argv.push("-n".into());
         }
         argv.push("-oX".into());
         argv.push("-".into());
@@ -797,11 +806,21 @@ mod tests {
                 "22,80",
                 "--script",
                 "safe",
+                "-n",
                 "-oX",
                 "-",
                 "10.10.10.5"
             ]
         );
+    }
+
+    #[test]
+    fn command_does_no_dns_and_ipv6_follows_dash_6() {
+        let t = ScopedTarget::new_for_test("node", "10.10.10.5", Tier::ActiveRecon);
+        let argv = Nmap.command(&t, &args(&["-n", "-sV"])).unwrap();
+        assert_eq!(argv.iter().filter(|a| *a == "-n").count(), 1, "{argv:?}");
+        assert!(!Nmap.ipv6(&args(&["-sV"])));
+        assert!(Nmap.ipv6(&args(&["-6", "-sV"])));
     }
 
     /// Field run 1: from a NAT'd VM, firewalld rejected nmap's unprivileged

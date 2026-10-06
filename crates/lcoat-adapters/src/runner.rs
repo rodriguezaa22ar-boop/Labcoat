@@ -6,7 +6,9 @@
 //!
 //! 1. `adapter.refused` (Tier 4/5, before any preflight) — or —
 //! 2. `scope.preflight` (allowed/denied; denied stops here),
-//! 3. `adapter.started` with the vantage,
+//!    then `adapter.refused` (`reason=unresolved`) when a DNS name does
+//!    not resolve, before anything runs,
+//! 3. `adapter.started` with the pinned IP (`resolved=`) and the vantage,
 //! 4. `artifact.created` for the captured output,
 //! 5. `adapter.finished` with exit code, duration, evidence id and hash.
 //!
@@ -275,6 +277,24 @@ pub fn run(op: &Operation<Active>, p: &RunParams) -> Result<Outcome> {
     // The preflight records allowed/denied and is the only source of a ScopedTarget.
     let scoped: ScopedTarget =
         op.scoped_target(tier, name, &target, &format!("run adapter {name}"))?;
+    // Resolve a DNS name once, here: the vantage probe, the ledger and the
+    // tool all use this one IP, and the tool does no lookup of its own.
+    let scoped = match scoped.pin(adapter.ipv6(&p.args)) {
+        Ok(pinned) => pinned,
+        Err(e) => {
+            op.append_event(
+                "adapter.refused",
+                tier,
+                name,
+                "denied",
+                &meta(format!(
+                    "adapter={name} tier={} target={target} reason=unresolved",
+                    tier as u8
+                ))?,
+            )?;
+            return Err(e);
+        }
+    };
     let mut argv = adapter.command(&scoped, &p.args)?;
     let resolved = look_path(&argv[0])?;
     argv[0] = resolved.display().to_string();
@@ -287,8 +307,9 @@ pub fn run(op: &Operation<Active>, p: &RunParams) -> Result<Outcome> {
         name,
         "ok",
         &meta(format!(
-            "adapter={name} tier={} target={target} vantage={host} vantage_addr={addr}",
-            tier as u8
+            "adapter={name} tier={} target={target} resolved={} vantage={host} vantage_addr={addr}",
+            tier as u8,
+            scoped.address()
         ))?,
     )?;
 

@@ -8,6 +8,7 @@
 //! execute is always a `Tier`, and `Tier::executable` is checked before any
 //! approval is consulted.
 
+use std::net::{IpAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 
 use lcoat_format::clock;
@@ -374,6 +375,45 @@ impl ScopedTarget {
     pub fn tier(&self) -> Tier {
         self.tier
     }
+
+    /// The same target with its address resolved once to one IP, so the
+    /// address the trail records is the address the tool is pointed at.
+    /// Without this a DNS name was resolved by the vantage probe and again
+    /// by the tool, and the two answers could differ (round-robin, a
+    /// changed record, split-horizon DNS). An IP address is kept as is. A
+    /// name takes the resolver's first IPv4 answer, as nmap would without
+    /// `-6`, or its first IPv6 answer when `ipv6` is set. A name that does
+    /// not resolve to that family is refused: nothing should run against a
+    /// target whose address is unknown.
+    pub fn pin(&self, ipv6: bool) -> Result<ScopedTarget> {
+        if self.address.parse::<IpAddr>().is_ok() {
+            return Ok(self.clone());
+        }
+        let family = if ipv6 { "IPv6" } else { "IPv4" };
+        let ip = (self.address.as_str(), 0)
+            .to_socket_addrs()
+            .map_err(|e| {
+                user_err!(
+                    "target {} ({}) does not resolve: {e}",
+                    self.name,
+                    self.address
+                )
+            })?
+            .map(|a| a.ip())
+            .find(|ip| ip.is_ipv6() == ipv6)
+            .ok_or_else(|| {
+                user_err!(
+                    "target {} ({}) has no {family} address",
+                    self.name,
+                    self.address
+                )
+            })?;
+        Ok(Self {
+            name: self.name.clone(),
+            address: ip.to_string(),
+            tier: self.tier,
+        })
+    }
 }
 
 impl Snapshot {
@@ -660,5 +700,24 @@ mod tests {
         assert_eq!(s.target_address, "10.0.0.1");
         assert_eq!(s.target_criticality, "low");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pin_resolves_a_name_once_and_keeps_an_ip() {
+        let ip = ScopedTarget::new("box", "10.0.0.5", Tier::ActiveRecon);
+        assert_eq!(ip.pin(false).unwrap(), ip);
+        let v6 = ScopedTarget::new("box", "::1", Tier::ActiveRecon);
+        assert_eq!(v6.pin(false).unwrap().address(), "::1");
+        let named = ScopedTarget::new("box", "localhost", Tier::ActiveRecon)
+            .pin(false)
+            .unwrap();
+        let addr: IpAddr = named.address().parse().unwrap();
+        assert!(addr.is_ipv4() && addr.is_loopback(), "{addr}");
+        assert_eq!((named.name(), named.tier()), ("box", Tier::ActiveRecon));
+        let e = ScopedTarget::new("gone", "no-such-host.invalid", Tier::ActiveRecon)
+            .pin(false)
+            .unwrap_err()
+            .to_string();
+        assert!(e.starts_with("target gone (no-such-host.invalid) "), "{e}");
     }
 }
