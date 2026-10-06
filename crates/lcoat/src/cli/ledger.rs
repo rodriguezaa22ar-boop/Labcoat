@@ -38,6 +38,14 @@ fn chain_verify(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
     let json = a.has("--json");
     let root = super::root()?;
     let op = lcoat_core::operation::Operation::load_named_or_active(&root, a.pos(0))?;
+    // A missing ledger reads as zero events, which would print as an
+    // unchained v1 ledger and exit 0; every operation has `op.started`.
+    if !lcoat_core::root::file_exists(&op.ledger_file()) {
+        return Err(fail(format!(
+            "operation ledger is missing: {}",
+            op.ledger_file().display()
+        )));
+    }
     let objects = ledger::read_objects(&op.ledger_file())?;
     let status = chain::verify(&objects);
     let (word, ok) = match &status {
