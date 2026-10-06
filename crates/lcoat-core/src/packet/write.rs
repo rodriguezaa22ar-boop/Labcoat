@@ -12,8 +12,8 @@
 //! Format 1.1: every anchor line that names a file under the lab root also
 //! carries `rel=<root-relative path>`, and the `Evidence manifest:` slot the
 //! shell left as `none` is filled when the operation has a manifest. v1
-//! verifiers ignore both; Lab Coat's use `rel=` only when the absolute path
-//! is gone.
+//! verifiers ignore both; Lab Coat's check the `rel=` file under the
+//! current root first, and the absolute path only when that is missing.
 
 use std::path::{Path, PathBuf};
 

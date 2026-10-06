@@ -111,23 +111,26 @@ impl VerifyResult {
         }
     }
 
-    /// Format 1.1 relocation: when the recorded absolute path is gone and
-    /// the anchor line carries `rel=`, the root-relative path is used
-    /// instead. A v1 line has no `rel=`, so v1 verdicts are unchanged.
+    /// Format 1.1 relocation: when the anchor line carries `rel=`, the file
+    /// under *this* lab root is checked, and the recorded absolute path only
+    /// when that one is missing. Review 2026-10-05: preferring the absolute
+    /// path made a copied or restored root verify against the original's
+    /// files while the original still existed. A v1 line has no `rel=`, so
+    /// v1 verdicts are unchanged; a `rel=` that is absolute or climbs out
+    /// with `..` is ignored.
     fn resolve(&self, path: &str, line: &str) -> String {
-        if path.is_empty() || file_exists(Path::new(path)) {
-            return path.to_owned();
+        let rel = Path::new(anchor_token(line, "rel"));
+        let inside = !rel.as_os_str().is_empty()
+            && rel
+                .components()
+                .all(|c| matches!(c, std::path::Component::Normal(_)));
+        if inside {
+            let candidate = self.root.join(rel);
+            if file_exists(&candidate) {
+                return candidate.display().to_string();
+            }
         }
-        let rel = anchor_token(line, "rel");
-        if rel.is_empty() {
-            return path.to_owned();
-        }
-        let candidate = self.root.join(rel);
-        if file_exists(&candidate) {
-            candidate.display().to_string()
-        } else {
-            path.to_owned()
-        }
+        path.to_owned()
     }
 
     fn row(&mut self, label: &str, status: &str, path: &str, detail: &str) {

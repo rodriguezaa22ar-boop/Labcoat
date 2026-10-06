@@ -1143,6 +1143,82 @@ fn a_broken_ledger_chain_is_never_current_and_never_anchored() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Review 2026-10-05: verifiers preferred the absolute path in a packet, so
+/// a copied root verified against the original's files while the original
+/// existed; and an operation's slug came from `SLUG` in its record, so a
+/// copied operation directory resumed (and half-mutated) the original.
+#[test]
+fn a_copied_root_verifies_its_own_files_and_a_copied_operation_is_refused() {
+    let root = fresh("copied-src");
+    let copy = fresh("copied-dst");
+    std::fs::write(root.join("scan.txt"), b"22/tcp open ssh\n").unwrap();
+    ok(&lcoat(
+        &root,
+        &[
+            "target",
+            "add",
+            "box",
+            "127.0.0.1",
+            "--scope-status",
+            "in-scope",
+        ],
+    ));
+    ok(&lcoat(&root, &["op", "start", "demo", "box"]));
+    ok(&lcoat(
+        &root,
+        &["evidence", "add", root.join("scan.txt").to_str().unwrap()],
+    ));
+    ok(&lcoat(&root, &["op", "report"]));
+    ok(&lcoat(&root, &["op", "handoff"]));
+    ok(&lcoat(&root, &["op", "close"]));
+    ok(&lcoat(&root, &["op", "closeout", "demo"]));
+    let cp = Command::new("cp")
+        .args([
+            "-a",
+            &format!("{}/.", root.display()),
+            copy.to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    assert!(cp.success());
+
+    // Edit the copy's report: the copy must say so, the original must not.
+    let report = copy.join("reports/demo-report.md");
+    let mut text = std::fs::read_to_string(&report).unwrap();
+    text.push_str("\nedited in the copy\n");
+    std::fs::write(&report, text).unwrap();
+    let out = lcoat(&copy, &["op", "verify", "demo"]);
+    let all = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        all.contains("Verification Status: attention-required"),
+        "{all}"
+    );
+    assert!(
+        all.contains(copy.to_str().unwrap()),
+        "checked the copy: {all}"
+    );
+    let orig = ok(&lcoat(&root, &["op", "verify", "demo"]));
+    assert!(orig.contains("Verification Status: verified"), "{orig}");
+
+    // An operation directory copied under another name is refused.
+    let cp = Command::new("cp")
+        .args([
+            "-a",
+            root.join("sessions/demo").to_str().unwrap(),
+            root.join("sessions/demo-copy").to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    assert!(cp.success());
+    let session = root.join("sessions/demo/session.env");
+    let before = std::fs::read(&session).unwrap();
+    let e = err(&lcoat(&root, &["op", "resume", "demo-copy"]));
+    assert!(e.contains("records SLUG=demo"), "{e}");
+    assert_eq!(std::fs::read(&session).unwrap(), before);
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&copy);
+}
+
 /// Review 2026-10-05: a command loaded its operation, then waited for the
 /// lock; if `op close` ran meanwhile, `evidence add` appended to the closed
 /// operation. The state is now checked again once the lock is held.
