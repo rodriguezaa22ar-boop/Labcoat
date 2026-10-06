@@ -150,11 +150,97 @@ struct Captured {
     exit_code: i32,
     timed_out: bool,
     duration: Duration,
+    /// Streams cut at [`MAX_CAPTURE_BYTES`] (`"stdout"`, `"stderr"`).
+    truncated: Vec<&'static str>,
+    /// A stream was still open after the run's process group was killed
+    /// (a descendant that left the group kept it): what arrived is kept, but
+    /// the output may be incomplete.
+    incomplete: bool,
+}
+
+/// Most bytes kept per stream. The rest is read and dropped (so the child
+/// never blocks on a full pipe) and the capture ends with a marker line.
+pub const MAX_CAPTURE_BYTES: usize = 64 * 1024 * 1024;
+
+/// How long to wait for the pipes to close once the run's processes are gone.
+const PIPE_GRACE: Duration = Duration::from_secs(2);
+
+/// One pipe drained into a buffer the runner can take at any time.
+struct Drain {
+    buf: std::sync::Arc<std::sync::Mutex<(Vec<u8>, bool)>>,
+    eof: std::sync::mpsc::Receiver<()>,
+}
+
+impl Drain {
+    fn start(pipe: Option<Box<dyn Read + Send>>, cap: usize) -> Self {
+        let buf = std::sync::Arc::new(std::sync::Mutex::new((Vec::new(), false)));
+        let (tx, eof) = std::sync::mpsc::channel();
+        let shared = std::sync::Arc::clone(&buf);
+        std::thread::spawn(move || {
+            if let Some(mut p) = pipe {
+                let mut chunk = [0u8; 64 * 1024];
+                loop {
+                    match p.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let Ok(mut g) = shared.lock() else { break };
+                            let room = cap.saturating_sub(g.0.len());
+                            g.0.extend_from_slice(&chunk[..n.min(room)]);
+                            if n > room {
+                                g.1 = true;
+                            }
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(_) => break,
+                    }
+                }
+            }
+            let _ = tx.send(());
+        });
+        Self { buf, eof }
+    }
+
+    /// Wait up to `grace` for end of file, then take what arrived:
+    /// `(bytes, truncated, reached_eof)`.
+    fn take(self, grace: Duration) -> (Vec<u8>, bool, bool) {
+        let done = self.eof.recv_timeout(grace).is_ok();
+        let mut g = match self.buf.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        (std::mem::take(&mut g.0), g.1, done)
+    }
+}
+
+/// SIGKILL every process in group `pgid` (best effort; the direct child is
+/// also killed through its handle). Std has no `killpg`, and the workspace
+/// forbids `unsafe`, so this runs the system `kill`, found on the scrubbed
+/// PATH, with a negative pid.
+fn kill_group(pgid: u32) {
+    if let Ok(kill) = look_path("kill") {
+        let _ = Command::new(kill)
+            .args(["-9", "--", &format!("-{pgid}")])
+            .env_clear()
+            .env("PATH", SCRUBBED_PATH)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
 }
 
 /// Run argv directly (never via a shell) with a scrubbed environment, stdin
 /// closed, a hard timeout, and stdout/stderr captured separately.
+///
+/// The child leads a new process group. When it exits or the timeout fires,
+/// the whole group is killed, so nothing it started outlives the run (a
+/// script's background `sleep`, a tool's helper) or holds the pipes open.
 fn execute(argv: &[String], timeout: Duration) -> Result<Captured> {
+    execute_capped(argv, timeout, MAX_CAPTURE_BYTES)
+}
+
+fn execute_capped(argv: &[String], timeout: Duration, cap: usize) -> Result<Captured> {
+    use std::os::unix::process::CommandExt;
     let Some((program, rest)) = argv.split_first() else {
         fail!("adapter produced an empty command");
     };
@@ -167,32 +253,22 @@ fn execute(argv: &[String], timeout: Duration) -> Result<Captured> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .process_group(0)
         .spawn()?;
-    // Readers hand their buffers back over channels so a grandchild that
-    // inherited the pipes (and survives the kill) cannot hang the run: after
-    // the timeout we take what arrived within a grace period.
-    let read_pipe = |mut pipe: Option<Box<dyn Read + Send>>| {
-        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            if let Some(p) = pipe.as_mut() {
-                let _ = p.read_to_end(&mut buf);
-            }
-            let _ = tx.send(buf);
-        });
-        rx
-    };
-    let out_rx = read_pipe(
+    let pgid = child.id();
+    let out = Drain::start(
         child
             .stdout
             .take()
             .map(|p| Box::new(p) as Box<dyn Read + Send>),
+        cap,
     );
-    let err_rx = read_pipe(
+    let err = Drain::start(
         child
             .stderr
             .take()
             .map(|p| Box::new(p) as Box<dyn Read + Send>),
+        cap,
     );
     let mut timed_out = false;
     let status = loop {
@@ -201,18 +277,26 @@ fn execute(argv: &[String], timeout: Duration) -> Result<Captured> {
         }
         if start.elapsed() >= timeout {
             timed_out = true;
+            kill_group(pgid);
             let _ = child.kill();
             break child.wait()?;
         }
         std::thread::sleep(Duration::from_millis(25));
     };
-    let grace = if timed_out {
-        Duration::from_millis(500)
-    } else {
-        Duration::from_secs(30)
-    };
-    let stdout = out_rx.recv_timeout(grace).unwrap_or_default();
-    let stderr = err_rx.recv_timeout(grace).unwrap_or_default();
+    // The leader is gone; whatever it left behind in its group goes too.
+    // (The group id cannot name an unrelated process while any member is
+    // alive; with none left the kill finds nothing.)
+    kill_group(pgid);
+    let duration = start.elapsed();
+    let (stdout, out_cut, out_eof) = out.take(PIPE_GRACE);
+    let (stderr, err_cut, err_eof) = err.take(PIPE_GRACE);
+    let mut truncated = Vec::new();
+    if out_cut {
+        truncated.push("stdout");
+    }
+    if err_cut {
+        truncated.push("stderr");
+    }
     let exit_code = if timed_out {
         -1
     } else {
@@ -223,7 +307,9 @@ fn execute(argv: &[String], timeout: Duration) -> Result<Captured> {
         stderr,
         exit_code,
         timed_out,
-        duration: start.elapsed(),
+        duration,
+        truncated,
+        incomplete: !(out_eof && err_eof),
     })
 }
 
@@ -323,10 +409,19 @@ pub fn run(op: &Operation<Active>, p: &RunParams) -> Result<Outcome> {
         .join("tmp")
         .join(format!("run-{}", std::process::id()));
     let capture = tmp.join(format!("{name}-output.txt"));
+    let marker = |stream: &str| {
+        format!("\n--- lcoat: {stream} truncated after {MAX_CAPTURE_BYTES} bytes ---\n")
+    };
     let mut body = captured.stdout.clone();
+    if captured.truncated.contains(&"stdout") {
+        body.extend_from_slice(marker("stdout").as_bytes());
+    }
     if !captured.stderr.is_empty() {
         body.extend_from_slice(b"\n--- stderr ---\n");
         body.extend_from_slice(&captured.stderr);
+        if captured.truncated.contains(&"stderr") {
+            body.extend_from_slice(marker("stderr").as_bytes());
+        }
     }
     if let Err(e) = mkdir_private(&tmp).and_then(|()| write_private(&capture, &body)) {
         finish_failed(captured.exit_code, "capture-failed")?;
@@ -355,7 +450,7 @@ pub fn run(op: &Operation<Active>, p: &RunParams) -> Result<Outcome> {
         }
     };
 
-    let status = if captured.exit_code == 0 && !captured.timed_out {
+    let status = if captured.exit_code == 0 && !captured.timed_out && !captured.incomplete {
         "ok"
     } else {
         "error"
@@ -369,6 +464,12 @@ pub fn run(op: &Operation<Active>, p: &RunParams) -> Result<Outcome> {
     );
     if captured.timed_out {
         detail.push_str(&format!(" timeout_s={}", timeout.as_secs()));
+    }
+    for stream in &captured.truncated {
+        detail.push_str(&format!(" truncated={stream}"));
+    }
+    if captured.incomplete {
+        detail.push_str(" output=incomplete");
     }
     let warnings = adapter.warnings(&captured.stdout);
     for w in &warnings {
@@ -423,6 +524,94 @@ mod tests {
         assert!(c.timed_out);
         assert_eq!(c.exit_code, -1);
         assert!(c.duration < Duration::from_secs(3));
+    }
+
+    fn argv(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    /// Running, as opposed to gone or a zombie waiting for init to reap it
+    /// (`kill -0` succeeds on a zombie).
+    fn alive(pid: &str) -> bool {
+        Command::new("ps")
+            .args(["-o", "stat=", "-p", pid])
+            .output()
+            .map(|o| {
+                let stat = String::from_utf8_lossy(&o.stdout).trim().to_owned();
+                !stat.is_empty() && !stat.starts_with('Z')
+            })
+            .unwrap_or(false)
+    }
+
+    /// Review 2026-10-05: the timeout killed only the direct child, so a
+    /// script's background `sleep` survived the run.
+    #[test]
+    fn the_timeout_kills_the_whole_process_group() {
+        let c = execute(
+            &argv(&["/bin/sh", "-c", "sleep 30 & echo $!; exec sleep 30"]),
+            Duration::from_millis(300),
+        )
+        .unwrap();
+        assert!(c.timed_out);
+        assert!(c.duration < Duration::from_secs(5), "{:?}", c.duration);
+        let pid = String::from_utf8_lossy(&c.stdout).trim().to_owned();
+        assert!(!pid.is_empty());
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!alive(&pid), "background child {pid} outlived the run");
+    }
+
+    /// Review 2026-10-05: a grandchild holding the pipe made the evidence
+    /// empty (after a 30 s wait) while the run reported `ok`.
+    #[test]
+    fn a_background_child_cannot_hold_the_output_hostage() {
+        let c = execute(
+            &argv(&["/bin/sh", "-c", "sleep 30 & echo $!; echo done"]),
+            Duration::from_secs(20),
+        )
+        .unwrap();
+        assert!(!c.timed_out);
+        assert_eq!(c.exit_code, 0);
+        assert!(!c.incomplete);
+        assert!(c.duration < Duration::from_secs(5), "{:?}", c.duration);
+        let out = String::from_utf8_lossy(&c.stdout).into_owned();
+        let mut lines = out.lines();
+        let pid = lines.next().unwrap().to_owned();
+        assert_eq!(lines.next(), Some("done"));
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!alive(&pid), "background child {pid} outlived the run");
+    }
+
+    /// A descendant that leaves the group keeps the pipe open: the run ends
+    /// anyway, keeps what arrived, and says the output may be incomplete.
+    #[test]
+    fn output_from_an_escaped_descendant_is_flagged_incomplete() {
+        let Ok(setsid) = look_path("setsid") else {
+            return; // no setsid(1) here (macOS); the other tests cover the rest
+        };
+        // setsid(1) execs in place when it is not a group leader, so `$!` is
+        // the escaped sleep itself.
+        let script = format!("{} sleep 30 & echo $!", setsid.display());
+        let c = execute(&argv(&["/bin/sh", "-c", &script]), Duration::from_secs(20)).unwrap();
+        let pid = String::from_utf8_lossy(&c.stdout).trim().to_owned();
+        let _ = Command::new("kill").args(["-9", &pid]).status();
+        assert!(c.incomplete);
+        assert!(!pid.is_empty());
+        assert!(c.duration < Duration::from_secs(5), "{:?}", c.duration);
+    }
+
+    /// Review 2026-10-05: captured output had no size limit.
+    #[test]
+    fn captured_output_is_capped_and_says_so() {
+        let c = execute_capped(
+            &argv(&["/bin/sh", "-c", "printf 0123456789abcdef; printf xyz >&2"]),
+            Duration::from_secs(5),
+            10,
+        )
+        .unwrap();
+        assert_eq!(c.stdout, b"0123456789");
+        assert_eq!(c.stderr, b"xyz");
+        assert_eq!(c.truncated, ["stdout"]);
+        assert!(!c.incomplete);
     }
 
     #[test]
