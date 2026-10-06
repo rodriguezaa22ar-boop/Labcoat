@@ -18,6 +18,7 @@ use lcoat_core::root::LabRoot;
 mod adapter;
 mod approval;
 mod args;
+mod doctor;
 mod evidence;
 mod finding;
 mod ledger;
@@ -35,6 +36,7 @@ pub const RULE: &str = "--------------------------------------------------------
 pub const USAGE: &str = "usage:
   lcoat help
   lcoat version
+  lcoat doctor [--json]
   lcoat target add <name> <address> [--scope-status status] [--criticality level] [--tag tag]... [--owner owner] [notes...]
   lcoat target show <name>
   lcoat target list
@@ -222,6 +224,7 @@ fn dispatch(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
             ));
             Ok(())
         }
+        "doctor" => doctor::run(ctx, rest),
         "hash" => tools::hash(ctx, rest),
         "scan" => tools::scan(ctx, rest),
         "receipt" => receipt::run(ctx, rest),
