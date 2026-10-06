@@ -193,6 +193,15 @@ An approval was current when its `expires_at` sorted after the current timestamp
 - `approval::current` only looks at records whose `op` is this operation, so another operation's grant neither grants nor revokes here.
 - A deliberate divergence: shell- and Lite-written approvals have no `expires_at` and are no longer current in Lab Coat. Re-grant with `approval grant ... --expires`. The conformance scenario records no approvals, so its output is unchanged.
 
+### The ledger chain decides the verdict (review 2026-10-05)
+
+Until now the chain was shown but never consulted: an event edited before any packet existed was anchored by every packet written afterwards (each records the ledger's whole-file hash, so the edit became the verified record), and `op trust-chain --strict` printed `Trust Chain Status: current` and exited 0 above its own `Ledger Chain: broken` line. Fixed in two places, through one check (`packet::LedgerIntegrity`):
+
+- **Verdict.** A broken chain, a missing ledger or one that does not parse makes the trust chain `attention-required` before any other rule, with the event named in the next step. `unchained` (v1) and `partial` (Lite-started) ledgers are unaffected, so shell- and Lite-written operations keep their verdicts and the three-way scenario is unchanged.
+- **Writers.** The closeout, audit, archive and accepted-risk review packets refuse to write over an unsound ledger, under the operation lock and before their own event is appended, and name `ledger chain-verify`. `ledger chain-verify` on a missing ledger is an error, not an empty v1 ledger.
+
+`conformance/tamper_rust.sh` case 4b edits an event, closes, and checks every refusal; case 4 now checks the verdict as well as the line. Still open (next): an operation Lab Coat started can be passed off as `unchained` by stripping the chain fields; that needs a format marker in `session.env`.
+
 ### `lcoat doctor` (phase 3)
 
 The shell's `atlas doctor` checks its runtime (directories, `jq`, `sha256sum`, the wiremap and vector adapters). Lab Coat has no runtime dependencies, so a port would check nothing; `lcoat doctor [--json]` instead checks what the field runs actually tripped over, before a run rather than during one. Same row layout as the shell (label in 24 columns, `ok`/`warn`/`fail` in 8, detail), the same `Status` / `Failures` / `Warnings` footer, exit 1 on any `fail`. `--json` is `lcoat.doctor.v1`: build facts, counts and every row.

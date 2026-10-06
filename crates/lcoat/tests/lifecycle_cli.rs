@@ -1003,3 +1003,84 @@ fn an_approval_record_must_parse_and_belong_to_this_operation() {
     assert!(ok(&check()).contains("ok: scope allowed"));
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Review 2026-10-05: a ledger event edited before any packet existed was
+/// anchored by every packet written afterwards, and `op trust-chain
+/// --strict` said `current` (exit 0) while its own `Ledger Chain` line said
+/// `broken`. The chain now decides the verdict, and no packet anchors an
+/// altered ledger.
+#[test]
+fn a_broken_ledger_chain_is_never_current_and_never_anchored() {
+    let root = fresh("broken-chain");
+    std::fs::write(root.join("scan.txt"), b"22/tcp open ssh\n").unwrap();
+    ok(&lcoat(
+        &root,
+        &[
+            "target",
+            "add",
+            "box",
+            "127.0.0.1",
+            "--scope-status",
+            "in-scope",
+        ],
+    ));
+    ok(&lcoat(&root, &["op", "start", "demo", "box"]));
+    ok(&lcoat(
+        &root,
+        &["evidence", "add", root.join("scan.txt").to_str().unwrap()],
+    ));
+    ok(&lcoat(&root, &["op", "report"]));
+    ok(&lcoat(&root, &["op", "close", "--force"]));
+
+    let ledger = root.join("sessions/demo/ledger.ndjson");
+    let text = std::fs::read_to_string(&ledger).unwrap();
+    let edited = text.replacen("reason=add evidence artifact", "reason=nothing here", 1);
+    assert_ne!(text, edited, "tamper did not apply");
+    std::fs::write(&ledger, edited).unwrap();
+
+    for (args, packet) in [
+        (&["op", "closeout", "demo"][..], "closeout manifest"),
+        (
+            &["finding", "review-packet", "--op", "demo"][..],
+            "accepted-risk review packet",
+        ),
+    ] {
+        let e = err(&lcoat(&root, args));
+        assert!(
+            e.contains(&format!(
+                "refusing to write the {packet}: ledger event 2 was altered"
+            )),
+            "{e}"
+        );
+        assert!(e.contains("lcoat ledger chain-verify demo"), "{e}");
+    }
+    assert!(!root.join("sessions/demo/closeout").exists());
+
+    let out = lcoat(&root, &["op", "trust-chain", "demo", "--strict"]);
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(kv(&text, "Trust Chain Status"), "attention-required");
+    assert!(
+        kv(&text, "Next Trust Step").contains("ledger event 2 was altered"),
+        "{text}"
+    );
+    assert!(
+        kv(&text, "Ledger Chain").starts_with("broken at event 2"),
+        "{text}"
+    );
+
+    let json =
+        String::from_utf8_lossy(&lcoat(&root, &["op", "trust-chain", "demo", "--json"]).stdout)
+            .into_owned();
+    assert!(json.contains(r#""status":"attention-required""#), "{json}");
+
+    // A deleted ledger is not an empty v1 one.
+    std::fs::remove_file(&ledger).unwrap();
+    let e = err(&lcoat(&root, &["ledger", "chain-verify", "demo"]));
+    assert!(e.contains("operation ledger is missing"), "{e}");
+    let text =
+        String::from_utf8_lossy(&lcoat(&root, &["op", "trust-chain", "demo"]).stdout).into_owned();
+    assert_eq!(kv(&text, "Trust Chain Status"), "attention-required");
+    assert_eq!(kv(&text, "Ledger Chain"), "missing");
+    let _ = std::fs::remove_dir_all(&root);
+}

@@ -207,6 +207,7 @@ pub fn queue<S: State>(op: &Operation<S>, window: u32) -> Result<Queue> {
 pub fn write<S: State>(op: &Operation<S>, packet_name: &str, window: u32) -> Result<Written> {
     let q = queue(op, window)?;
     let _lock = op.lock()?;
+    super::require_sound_ledger(op, "accepted-risk review packet")?;
     let path = packet_path(
         op,
         DIR,

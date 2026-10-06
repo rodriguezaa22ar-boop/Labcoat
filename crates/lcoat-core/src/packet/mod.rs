@@ -93,6 +93,76 @@ pub fn latest_in_ledger<S: State>(op: &Operation<S>, subdir: &str) -> Result<Str
         .unwrap_or_default())
 }
 
+/// The integrity of an operation's ledger as the trust chain and packet
+/// writers see it: the format 1.1 chain walked event by event, or the reason
+/// it could not be walked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LedgerIntegrity {
+    /// The ledger read; this is what its chain says.
+    Chain(crate::chain::ChainStatus),
+    /// No ledger file. Every operation has at least `op.started`.
+    Missing,
+    /// The ledger exists but does not parse (a torn or edited line).
+    Unreadable(String),
+}
+
+impl LedgerIntegrity {
+    /// Read and walk the operation's ledger.
+    pub fn of<S: State>(op: &Operation<S>) -> Self {
+        let path = ledger::file(&op.dir);
+        if !file_exists(&path) {
+            return Self::Missing;
+        }
+        match ledger::read_objects(&path) {
+            Ok(objects) => Self::Chain(crate::chain::verify(&objects)),
+            Err(e) => Self::Unreadable(e.to_string()),
+        }
+    }
+
+    /// Whether a packet may anchor this ledger. A v1 (`Unchained`) or
+    /// Lite-started (`Partial`) ledger may: the chain cannot say more about
+    /// it than the whole-file hash the packet records anyway.
+    pub fn is_sound(&self) -> bool {
+        !matches!(
+            self,
+            Self::Missing
+                | Self::Unreadable(_)
+                | Self::Chain(crate::chain::ChainStatus::Broken { .. })
+        )
+    }
+
+    /// One line for the operator: what is wrong. Empty when sound.
+    pub fn problem(&self) -> String {
+        match self {
+            Self::Missing => "the operation ledger is missing".to_owned(),
+            Self::Unreadable(e) => format!("the operation ledger does not parse ({e})"),
+            Self::Chain(crate::chain::ChainStatus::Broken { index, reason }) => {
+                format!(
+                    "ledger event {} was altered after it was recorded ({reason})",
+                    index + 1
+                )
+            }
+            Self::Chain(_) => String::new(),
+        }
+    }
+}
+
+/// Refuse to write a packet that would anchor an altered ledger. Called by
+/// every packet writer under the operation lock, before its ledger event is
+/// appended: a packet's whole-file ledger hash would otherwise turn an
+/// edited event into the verified record.
+pub fn require_sound_ledger<S: State>(op: &Operation<S>, packet: &str) -> Result<()> {
+    let li = LedgerIntegrity::of(op);
+    if !li.is_sound() {
+        fail!(
+            "refusing to write the {packet}: {}; a packet would anchor it as the verified record. Investigate with: lcoat ledger chain-verify {}",
+            li.problem(),
+            op.slug
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
