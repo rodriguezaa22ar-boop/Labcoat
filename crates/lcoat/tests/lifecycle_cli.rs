@@ -963,6 +963,251 @@ fn next_lines_run_as_printed() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Review 2026-10-05: `evidence verify` trusted the index alone. Emptying
+/// it gave `verified, checked 0`; a newer index record with a new hash
+/// re-blessed an edited artifact; a `..` path was followed. The index is
+/// now cross-checked against the manifest and the ledger.
+#[test]
+fn evidence_verify_cross_checks_index_manifest_and_ledger() {
+    let root = fresh("ev-cross");
+    std::fs::write(root.join("scan.txt"), b"22/tcp open ssh\n").unwrap();
+    ok(&lcoat(
+        &root,
+        &[
+            "target",
+            "add",
+            "box",
+            "127.0.0.1",
+            "--scope-status",
+            "in-scope",
+        ],
+    ));
+    ok(&lcoat(&root, &["op", "start", "demo", "box"]));
+    let added = ok(&lcoat(
+        &root,
+        &["evidence", "add", root.join("scan.txt").to_str().unwrap()],
+    ));
+    let id = kv(&added, "id");
+    assert!(id.starts_with("ev_"), "{added}");
+    let op = root.join("sessions/demo");
+    let index = op.join("evidence.ndjson");
+    let original = std::fs::read_to_string(&index).unwrap();
+    ok(&lcoat(&root, &["evidence", "verify", "demo"]));
+
+    let verdict = |root: &Path| {
+        let out = lcoat(root, &["evidence", "verify", "demo"]);
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+
+    // 1. Emptied index: the manifest and the ledger still name the capture.
+    std::fs::write(&index, "").unwrap();
+    let text = verdict(&root);
+    assert!(text.contains(&id) && text.contains("unindexed"), "{text}");
+    assert!(
+        text.contains("recorded by the manifest, absent from the index"),
+        "{text}"
+    );
+    assert_eq!(kv(&text, "Verification Status"), "attention-required");
+
+    // 2. Edit the artifact, then append a newer index record blessing it.
+    std::fs::write(&index, &original).unwrap();
+    let artifact = op.join(format!("evidence/{id}/scan.txt"));
+    std::fs::write(&artifact, b"nothing open\n").unwrap();
+    let new_sha = ok(&lcoat(&root, &["hash", artifact.to_str().unwrap()]))
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_owned();
+    let old_sha = kv(&added, "sha256");
+    assert!(!old_sha.is_empty(), "{added}");
+    let last = original.lines().last().unwrap().replace(&old_sha, &new_sha);
+    std::fs::write(&index, format!("{original}{last}\n")).unwrap();
+    let text = verdict(&root);
+    assert!(text.contains("conflict"), "{text}");
+    assert!(
+        text.contains(&format!("an earlier index record has sha256={old_sha}")),
+        "{text}"
+    );
+
+    // 3. Rewrite the only record instead: the manifest disagrees.
+    std::fs::write(&index, original.replace(&old_sha, &new_sha)).unwrap();
+    let text = verdict(&root);
+    assert!(
+        text.contains(&format!("the manifest recorded sha256={old_sha}")),
+        "{text}"
+    );
+
+    // 4. A stored path that leaves the operation directory.
+    std::fs::write(
+        &index,
+        original.replace(&format!("evidence/{id}/scan.txt"), "../../../etc/hostname"),
+    )
+    .unwrap();
+    let text = verdict(&root);
+    assert!(
+        text.contains("unsafe") && text.contains("leaves the operation directory"),
+        "{text}"
+    );
+
+    // Restored, everything verifies again.
+    std::fs::write(&index, &original).unwrap();
+    std::fs::write(&artifact, b"22/tcp open ssh\n").unwrap();
+    ok(&lcoat(&root, &["evidence", "verify", "demo"]));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Review 2026-10-05: a ledger event edited before any packet existed was
+/// anchored by every packet written afterwards, and `op trust-chain
+/// --strict` said `current` (exit 0) while its own `Ledger Chain` line said
+/// `broken`. The chain now decides the verdict, and no packet anchors an
+/// altered ledger.
+#[test]
+fn a_broken_ledger_chain_is_never_current_and_never_anchored() {
+    let root = fresh("broken-chain");
+    std::fs::write(root.join("scan.txt"), b"22/tcp open ssh\n").unwrap();
+    ok(&lcoat(
+        &root,
+        &[
+            "target",
+            "add",
+            "box",
+            "127.0.0.1",
+            "--scope-status",
+            "in-scope",
+        ],
+    ));
+    ok(&lcoat(&root, &["op", "start", "demo", "box"]));
+    ok(&lcoat(
+        &root,
+        &["evidence", "add", root.join("scan.txt").to_str().unwrap()],
+    ));
+    ok(&lcoat(&root, &["op", "report"]));
+    ok(&lcoat(&root, &["op", "close", "--force"]));
+
+    let ledger = root.join("sessions/demo/ledger.ndjson");
+    let text = std::fs::read_to_string(&ledger).unwrap();
+    let edited = text.replacen("reason=add evidence artifact", "reason=nothing here", 1);
+    assert_ne!(text, edited, "tamper did not apply");
+    std::fs::write(&ledger, edited).unwrap();
+
+    for (args, packet) in [
+        (&["op", "closeout", "demo"][..], "closeout manifest"),
+        (
+            &["finding", "review-packet", "--op", "demo"][..],
+            "accepted-risk review packet",
+        ),
+    ] {
+        let e = err(&lcoat(&root, args));
+        assert!(
+            e.contains(&format!(
+                "refusing to write the {packet}: ledger event 2 was altered"
+            )),
+            "{e}"
+        );
+        assert!(e.contains("lcoat ledger chain-verify demo"), "{e}");
+    }
+    assert!(!root.join("sessions/demo/closeout").exists());
+
+    let out = lcoat(&root, &["op", "trust-chain", "demo", "--strict"]);
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(kv(&text, "Trust Chain Status"), "attention-required");
+    assert!(
+        kv(&text, "Next Trust Step").contains("ledger event 2 was altered"),
+        "{text}"
+    );
+    assert!(
+        kv(&text, "Ledger Chain").starts_with("broken at event 2"),
+        "{text}"
+    );
+
+    let json =
+        String::from_utf8_lossy(&lcoat(&root, &["op", "trust-chain", "demo", "--json"]).stdout)
+            .into_owned();
+    assert!(json.contains(r#""status":"attention-required""#), "{json}");
+
+    // A deleted ledger is not an empty v1 one.
+    std::fs::remove_file(&ledger).unwrap();
+    let e = err(&lcoat(&root, &["ledger", "chain-verify", "demo"]));
+    assert!(e.contains("operation ledger is missing"), "{e}");
+    let text =
+        String::from_utf8_lossy(&lcoat(&root, &["op", "trust-chain", "demo"]).stdout).into_owned();
+    assert_eq!(kv(&text, "Trust Chain Status"), "attention-required");
+    assert_eq!(kv(&text, "Ledger Chain"), "missing");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Review 2026-10-05: a planted `manifest.ndjson` symlink made `evidence
+/// add` append outside the root, and a `reports/` symlink made `op report`
+/// write there. Writes now refuse to follow a link below the lab root, and
+/// nothing lands outside it.
+#[test]
+fn writes_never_follow_a_planted_symlink() {
+    use std::os::unix::fs::symlink;
+    let root = fresh("symlinks");
+    let outside = fresh("symlinks-outside");
+    std::fs::write(root.join("scan.txt"), b"22/tcp open ssh\n").unwrap();
+    let scan = root.join("scan.txt");
+    ok(&lcoat(
+        &root,
+        &[
+            "target",
+            "add",
+            "box",
+            "127.0.0.1",
+            "--scope-status",
+            "in-scope",
+        ],
+    ));
+    ok(&lcoat(&root, &["op", "start", "demo", "box"]));
+    let op_dir = root.join("sessions/demo");
+
+    // A manifest that is a link to a file elsewhere.
+    ok(&lcoat(&root, &["evidence", "add", scan.to_str().unwrap()]));
+    let manifest = op_dir.join("evidence/manifest.ndjson");
+    std::fs::rename(&manifest, outside.join("manifest.ndjson")).unwrap();
+    symlink(outside.join("manifest.ndjson"), &manifest).unwrap();
+    let before = std::fs::read(outside.join("manifest.ndjson")).unwrap();
+    let e = err(&lcoat(&root, &["evidence", "add", scan.to_str().unwrap()]));
+    assert!(e.contains("manifest.ndjson: it is a symbolic link"), "{e}");
+    assert_eq!(
+        std::fs::read(outside.join("manifest.ndjson")).unwrap(),
+        before
+    );
+    std::fs::remove_file(&manifest).unwrap();
+    std::fs::rename(outside.join("manifest.ndjson"), &manifest).unwrap();
+
+    // A reports directory that is a link to a directory elsewhere.
+    let reports = root.join("reports");
+    let _ = std::fs::remove_dir_all(&reports);
+    symlink(&outside, &reports).unwrap();
+    let e = err(&lcoat(&root, &["op", "report"]));
+    assert!(e.contains("is a symbolic link"), "{e}");
+    assert!(e.contains("reports"), "{e}");
+    assert_eq!(
+        std::fs::read_dir(&outside).unwrap().count(),
+        0,
+        "nothing may land outside"
+    );
+    std::fs::remove_file(&reports).unwrap();
+    ok(&lcoat(&root, &["op", "report"]));
+
+    // A link further up (the operation's evidence directory) is refused too.
+    let evidence = op_dir.join("evidence");
+    std::fs::rename(&evidence, outside.join("evidence")).unwrap();
+    symlink(outside.join("evidence"), &evidence).unwrap();
+    let e = err(&lcoat(&root, &["evidence", "add", scan.to_str().unwrap()]));
+    assert!(e.contains("is a symbolic link"), "{e}");
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
 /// Review 2026-10-05: a command loaded its operation, then waited for the
 /// lock; if `op close` ran meanwhile, `evidence add` appended to the closed
 /// operation. The state is now checked again once the lock is held.
@@ -1176,150 +1421,4 @@ fn a_run_that_cannot_start_is_still_finished_in_the_ledger() {
     assert!(last.contains(r#""event":"adapter.finished""#), "{last}");
     assert!(last.contains("reason=spawn-failed"), "{last}");
     let _ = std::fs::remove_dir_all(&root);
-}
-
-/// Review 2026-10-05: a ledger event edited before any packet existed was
-/// anchored by every packet written afterwards, and `op trust-chain
-/// --strict` said `current` (exit 0) while its own `Ledger Chain` line said
-/// `broken`. The chain now decides the verdict, and no packet anchors an
-/// altered ledger.
-#[test]
-fn a_broken_ledger_chain_is_never_current_and_never_anchored() {
-    let root = fresh("broken-chain");
-    std::fs::write(root.join("scan.txt"), b"22/tcp open ssh\n").unwrap();
-    ok(&lcoat(
-        &root,
-        &[
-            "target",
-            "add",
-            "box",
-            "127.0.0.1",
-            "--scope-status",
-            "in-scope",
-        ],
-    ));
-    ok(&lcoat(&root, &["op", "start", "demo", "box"]));
-    ok(&lcoat(
-        &root,
-        &["evidence", "add", root.join("scan.txt").to_str().unwrap()],
-    ));
-    ok(&lcoat(&root, &["op", "report"]));
-    ok(&lcoat(&root, &["op", "close", "--force"]));
-
-    let ledger = root.join("sessions/demo/ledger.ndjson");
-    let text = std::fs::read_to_string(&ledger).unwrap();
-    let edited = text.replacen("reason=add evidence artifact", "reason=nothing here", 1);
-    assert_ne!(text, edited, "tamper did not apply");
-    std::fs::write(&ledger, edited).unwrap();
-
-    for (args, packet) in [
-        (&["op", "closeout", "demo"][..], "closeout manifest"),
-        (
-            &["finding", "review-packet", "--op", "demo"][..],
-            "accepted-risk review packet",
-        ),
-    ] {
-        let e = err(&lcoat(&root, args));
-        assert!(
-            e.contains(&format!(
-                "refusing to write the {packet}: ledger event 2 was altered"
-            )),
-            "{e}"
-        );
-        assert!(e.contains("lcoat ledger chain-verify demo"), "{e}");
-    }
-    assert!(!root.join("sessions/demo/closeout").exists());
-
-    let out = lcoat(&root, &["op", "trust-chain", "demo", "--strict"]);
-    assert_eq!(out.status.code(), Some(1));
-    let text = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(kv(&text, "Trust Chain Status"), "attention-required");
-    assert!(
-        kv(&text, "Next Trust Step").contains("ledger event 2 was altered"),
-        "{text}"
-    );
-    assert!(
-        kv(&text, "Ledger Chain").starts_with("broken at event 2"),
-        "{text}"
-    );
-
-    let json =
-        String::from_utf8_lossy(&lcoat(&root, &["op", "trust-chain", "demo", "--json"]).stdout)
-            .into_owned();
-    assert!(json.contains(r#""status":"attention-required""#), "{json}");
-
-    // A deleted ledger is not an empty v1 one.
-    std::fs::remove_file(&ledger).unwrap();
-    let e = err(&lcoat(&root, &["ledger", "chain-verify", "demo"]));
-    assert!(e.contains("operation ledger is missing"), "{e}");
-    let text =
-        String::from_utf8_lossy(&lcoat(&root, &["op", "trust-chain", "demo"]).stdout).into_owned();
-    assert_eq!(kv(&text, "Trust Chain Status"), "attention-required");
-    assert_eq!(kv(&text, "Ledger Chain"), "missing");
-    let _ = std::fs::remove_dir_all(&root);
-}
-
-/// Review 2026-10-05: a planted `manifest.ndjson` symlink made `evidence
-/// add` append outside the root, and a `reports/` symlink made `op report`
-/// write there. Writes now refuse to follow a link below the lab root, and
-/// nothing lands outside it.
-#[test]
-fn writes_never_follow_a_planted_symlink() {
-    use std::os::unix::fs::symlink;
-    let root = fresh("symlinks");
-    let outside = fresh("symlinks-outside");
-    std::fs::write(root.join("scan.txt"), b"22/tcp open ssh\n").unwrap();
-    let scan = root.join("scan.txt");
-    ok(&lcoat(
-        &root,
-        &[
-            "target",
-            "add",
-            "box",
-            "127.0.0.1",
-            "--scope-status",
-            "in-scope",
-        ],
-    ));
-    ok(&lcoat(&root, &["op", "start", "demo", "box"]));
-    let op_dir = root.join("sessions/demo");
-
-    // A manifest that is a link to a file elsewhere.
-    ok(&lcoat(&root, &["evidence", "add", scan.to_str().unwrap()]));
-    let manifest = op_dir.join("evidence/manifest.ndjson");
-    std::fs::rename(&manifest, outside.join("manifest.ndjson")).unwrap();
-    symlink(outside.join("manifest.ndjson"), &manifest).unwrap();
-    let before = std::fs::read(outside.join("manifest.ndjson")).unwrap();
-    let e = err(&lcoat(&root, &["evidence", "add", scan.to_str().unwrap()]));
-    assert!(e.contains("manifest.ndjson: it is a symbolic link"), "{e}");
-    assert_eq!(
-        std::fs::read(outside.join("manifest.ndjson")).unwrap(),
-        before
-    );
-    std::fs::remove_file(&manifest).unwrap();
-    std::fs::rename(outside.join("manifest.ndjson"), &manifest).unwrap();
-
-    // A reports directory that is a link to a directory elsewhere.
-    let reports = root.join("reports");
-    let _ = std::fs::remove_dir_all(&reports);
-    symlink(&outside, &reports).unwrap();
-    let e = err(&lcoat(&root, &["op", "report"]));
-    assert!(e.contains("is a symbolic link"), "{e}");
-    assert!(e.contains("reports"), "{e}");
-    assert_eq!(
-        std::fs::read_dir(&outside).unwrap().count(),
-        0,
-        "nothing may land outside"
-    );
-    std::fs::remove_file(&reports).unwrap();
-    ok(&lcoat(&root, &["op", "report"]));
-
-    // A link further up (the operation's evidence directory) is refused too.
-    let evidence = op_dir.join("evidence");
-    std::fs::rename(&evidence, outside.join("evidence")).unwrap();
-    symlink(outside.join("evidence"), &evidence).unwrap();
-    let e = err(&lcoat(&root, &["evidence", "add", scan.to_str().unwrap()]));
-    assert!(e.contains("is a symbolic link"), "{e}");
-    let _ = std::fs::remove_dir_all(&root);
-    let _ = std::fs::remove_dir_all(&outside);
 }
