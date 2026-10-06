@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
@@ -14,30 +21,70 @@ jobs:
     name: fmt, clippy, test, deny
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
         with:
+          toolchain: stable
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo clippy --workspace --all-targets --locked --no-default-features -- -D warnings
       - run: cargo test --workspace --locked
       - run: cargo test --workspace --locked --no-default-features
       # Crash-injection tests need the crash points compiled in.
       - run: cargo test --workspace --locked --features lcoat/test-support
       # Format 1.1 tamper cases that only this build can catch (no shell needed).
       - run: conformance/tamper_rust.sh target/debug/lcoat
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
         with:
           command: check
 
   msrv:
-    name: builds on MSRV
+    name: tests on MSRV (1.89)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.89
-      - run: cargo build --workspace --locked
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: "1.89"
+      # rust-toolchain.toml pins `stable`, which would override the toolchain
+      # installed above; `+1.89` makes cargo use the MSRV for real.
+      - run: cargo +1.89 --version
+      - run: cargo +1.89 test --workspace --locked
+      - run: cargo +1.89 test --workspace --locked --no-default-features
+
+  conformance:
+    name: three-way conformance (shell, Lite, Rust)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # The oracle and the second opinion, at the pins cross_check.sh asserts.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: rodriguezaa22ar-boop/atlas-trust-infrastructure
+          ref: 23ba2d214733df8afeaa2ef1a2b5a1f5ea3f0953
+          path: atlas-trust-infrastructure
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: rodriguezaa22ar-boop/GO-project
+          ref: v0.1.4
+          path: GO-project
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: GO-project/go.mod
+          cache: false
+      - run: conformance/cross_check.sh
+        env:
+          ATLAS_REPO: ${{ github.workspace }}/atlas-trust-infrastructure
+          GO_PROJECT: ${{ github.workspace }}/GO-project
 
   release-builds:
     name: static builds
@@ -53,9 +100,10 @@ jobs:
             os: macos-latest
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
       - if: contains(matrix.target, 'aarch64-unknown-linux')
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
@@ -68,7 +116,7 @@ jobs:
           mkdir -p dist
           cp target/${{ matrix.target }}/release/lcoat dist/lcoat-${{ matrix.target }}
           (cd dist && shasum -a 256 lcoat-* > SHA256SUMS-${{ matrix.target }})
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: lcoat-${{ matrix.target }}
           path: dist/
