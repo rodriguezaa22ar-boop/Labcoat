@@ -474,7 +474,7 @@ impl Snapshot {
             return deny(
                 format!("{detail} target-scope-status={status}"),
                 format!(
-                    "scope refused: target '{}' has scope status '{status}'; only an in-scope target can be contacted (lcoat target add {} <address> --scope-status in-scope, then start a new operation)",
+                    "scope refused: target '{}' has scope status '{status}'; only an in-scope target can be contacted (lcoat target update {} --scope-status in-scope, then start a new operation)",
                     self.target, self.target
                 ),
             );

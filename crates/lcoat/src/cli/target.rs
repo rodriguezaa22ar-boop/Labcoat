@@ -1,6 +1,8 @@
-//! `target add|show|list`.
+//! `target add|update|show|list`.
 
-use lcoat_core::operation::{NewTarget, add_target, list_targets, load_target};
+use lcoat_core::operation::{
+    NewTarget, TagEdit, TargetUpdate, add_target, list_targets, load_target, update_target,
+};
 use lcoat_format::ids::slugify;
 
 use super::{CmdResult, Ctx, fail, metadata, mutable_root, need_args, option, root};
@@ -8,10 +10,11 @@ use super::{CmdResult, Ctx, fail, metadata, mutable_root, need_args, option, roo
 /// Dispatch `target <verb>`.
 pub fn run(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
     let Some((verb, rest)) = args.split_first() else {
-        return Err(fail("target add|show|list"));
+        return Err(fail("target add|update|show|list"));
     };
     match verb.as_str() {
         "add" => add(ctx, rest),
+        "update" => update(ctx, rest),
         "show" => show(ctx, rest),
         "list" => list(ctx),
         other => Err(fail(format!("unknown target command: {other}"))),
@@ -88,9 +91,69 @@ fn add(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
         super::next(ctx, &["op", "start", &format!("{slug}-check"), &slug]);
     } else {
         ctx.note(&format!(
-            "scope status is '{}': nothing above Tier 0 will contact this target until it is added with --scope-status in-scope",
+            "scope status is '{}': nothing above Tier 0 will contact this target until it is in scope: lcoat target update {slug} --scope-status in-scope",
             t.scope_status
         ));
+    }
+    Ok(())
+}
+
+/// `cmd_target_update`: same options and output as the shell build, every
+/// free-text value scanned like `target add`.
+fn update(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
+    const USAGE: &str = "target update <name> [--address address] [--scope-status status] [--criticality level] [--tag tag] [--clear-tags] [--owner owner] [--notes text]";
+    need_args(1, args, USAGE)?;
+    let mut u = TargetUpdate::default();
+    let rest = &args[1..];
+    let mut i = 0;
+    while i < rest.len() {
+        let flag = rest[i].as_str();
+        if flag == "--clear-tags" {
+            u.tags.push(TagEdit::Clear);
+            i += 1;
+            continue;
+        }
+        if !matches!(
+            flag,
+            "--address" | "--scope-status" | "--criticality" | "--tag" | "--owner" | "--notes"
+        ) {
+            return Err(fail(format!("unknown target update option: {flag}")));
+        }
+        let v = option(rest, i, &format!("target update <name> {flag} <value>"))?.to_owned();
+        match flag {
+            "--address" => u.address = Some(metadata("address", &v)?.as_str().to_owned()),
+            "--scope-status" => u.scope_status = Some(v),
+            "--criticality" => u.criticality = Some(v),
+            "--tag" => {
+                if v.is_empty() {
+                    return Err(fail("target tag cannot be empty"));
+                }
+                if v.contains(char::is_whitespace) {
+                    return Err(fail(format!("target tags cannot contain whitespace: {v}")));
+                }
+                u.tags
+                    .push(TagEdit::Add(metadata("--tag", &v)?.as_str().to_owned()));
+            }
+            "--owner" => u.owner = Some(metadata("--owner", &v)?.as_str().to_owned()),
+            _ => u.notes = Some(metadata("notes", &v)?.as_str().to_owned()),
+        }
+        i += 2;
+    }
+    let root = mutable_root()?;
+    let t = update_target(&root, &args[0], &u)?;
+    ctx.line(&format!("updated target: {}", t.slug));
+    ctx.kv("address", &t.address);
+    ctx.kv("scope_status", &t.scope_status);
+    ctx.kv("criticality", &t.criticality);
+    if !t.tags.is_empty() {
+        ctx.kv("tags", &t.tags);
+    }
+    if !t.owner.is_empty() {
+        ctx.kv("owner", &t.owner);
+    }
+    if t.scope_status == "in-scope" {
+        // A running operation keeps the scope snapshot it started with.
+        super::next(ctx, &["op", "start", &format!("{}-check", t.slug), &t.slug]);
     }
     Ok(())
 }

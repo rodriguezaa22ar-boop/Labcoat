@@ -37,6 +37,7 @@ pub const USAGE: &str = "usage:
   lcoat version
   lcoat doctor [--json]
   lcoat target add <name> <address> [--scope-status status] [--criticality level] [--tag tag] [--owner owner] [notes...]
+  lcoat target update <name> [--address address] [--scope-status status] [--criticality level] [--tag tag] [--clear-tags] [--owner owner] [--notes text]
   lcoat target show <name>
   lcoat target list
   lcoat profile list

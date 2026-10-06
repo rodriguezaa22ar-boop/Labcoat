@@ -963,6 +963,105 @@ fn next_lines_run_as_printed() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Review 2026-10-05: the refusals said to re-run `target add`, which then
+/// refused the existing target, so a `review` target could never be put in
+/// scope. `target update` is the shell build's command, same options, same
+/// record key order and output, plus the `next:` line `target add` prints.
+#[test]
+fn a_review_target_is_promoted_with_target_update() {
+    let root = fresh("target-update");
+    let added = ok(&lcoat(
+        &root,
+        &[
+            "target",
+            "add",
+            "maybe",
+            "10.0.0.9",
+            "--scope-status",
+            "review",
+            "--tag",
+            "a",
+        ],
+    ));
+    assert!(
+        added.contains("lcoat target update maybe --scope-status in-scope"),
+        "{added}"
+    );
+    let out = ok(&lcoat(
+        &root,
+        &[
+            "target",
+            "update",
+            "maybe",
+            "--scope-status",
+            "in-scope",
+            "--tag",
+            "b",
+            "--tag",
+            "a",
+            "--owner",
+            "ops",
+            "--notes",
+            "lab vm",
+        ],
+    ));
+    assert_eq!(
+        out,
+        "updated target: maybe\naddress: 10.0.0.9\nscope_status: in-scope\ncriticality: unknown\ntags: a b\nowner: ops\nnext: lcoat op start maybe-check maybe\n"
+    );
+    let rec = std::fs::read_to_string(root.join("targets/maybe.env")).unwrap();
+    let keys: Vec<&str> = rec.lines().filter_map(|l| l.split('=').next()).collect();
+    assert_eq!(
+        keys,
+        [
+            "NAME",
+            "CREATED_AT",
+            "ADDRESS",
+            "SCOPE_STATUS",
+            "CRITICALITY",
+            "TAGS",
+            "OWNER",
+            "NOTES",
+            "UPDATED_AT"
+        ],
+        "the shell's upsert order"
+    );
+    assert!(
+        rec.contains("TAGS=a\\ b\n") && rec.contains("NOTES=lab\\ vm\n"),
+        "{rec}"
+    );
+    ok(&lcoat(&root, &["op", "start", "maybe-check", "maybe"]));
+
+    let cleared = ok(&lcoat(
+        &root,
+        &["target", "update", "maybe", "--clear-tags", "--tag", "c"],
+    ));
+    assert!(cleared.contains("tags: c\n"), "{cleared}");
+    for (args, msg) in [
+        (&["target", "update", "nope"][..], "unknown target: nope"),
+        (
+            &["target", "update", "maybe", "--scope-status", "yes"],
+            "expected target scope status",
+        ),
+        (
+            &["target", "update", "maybe", "--deep"],
+            "unknown target update option: --deep",
+        ),
+        (
+            &["target", "update", "maybe", "--notes", "password=hunter2"],
+            "refusing to record",
+        ),
+        (
+            &["target", "update", "maybe", "--owner"],
+            "target update <name> --owner <value>",
+        ),
+    ] {
+        let e = err(&lcoat(&root, args));
+        assert!(e.contains(msg), "{args:?}: {e}");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// Review 2026-10-05: `evidence verify` trusted the index alone. Emptying
 /// it gave `verified, checked 0`; a newer index record with a new hash
 /// re-blessed an edited artifact; a `..` path was followed. The index is
