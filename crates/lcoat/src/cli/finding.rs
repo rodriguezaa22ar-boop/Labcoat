@@ -151,7 +151,8 @@ fn resolve(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
     let root = mutable_root()?;
     let op = load_active(&root, "")?;
     let f = findings::resolve(&op, &id, &evidence, note)?;
-    ctx.ok("finding resolved");
+    // The shell's `finding resolve` is an update and says so.
+    ctx.ok("finding updated");
     print_finding(ctx, &f);
     Ok(())
 }
@@ -203,10 +204,19 @@ fn accept(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
         match rest[i].as_str() {
             "--reason" => reason = Some(metadata("--reason", option(rest, i, USAGE)?)?),
             "--owner" => owner = Some(metadata("--owner", option(rest, i, USAGE)?)?),
-            // Same forms as approvals (YYYY-MM-DD, timestamp, Nh, Nd),
+            // Same forms as approvals (YYYY-MM-DD, timestamp, Nh, Nd). A
+            // plain date is stored as typed, as the shell build stores it
+            // (core reads it as the end of that day); the other forms are
             // stored as the instant they name.
             "--expires" | "--until" => {
-                expires = Some(super::approval::parse_expiry(option(rest, i, USAGE)?)?.timestamp())
+                let v = option(rest, i, USAGE)?;
+                let instant = super::approval::parse_expiry(v)?;
+                let plain_date = v.len() == 10 && instant.timestamp().starts_with(v);
+                expires = Some(if plain_date {
+                    v.to_owned()
+                } else {
+                    instant.timestamp()
+                });
             }
             "--evidence" => evidence.push(option(rest, i, USAGE)?.to_owned()),
             other => return Err(fail(format!("unknown finding accept option: {other}"))),
