@@ -15,6 +15,13 @@ fn main() -> std::process::ExitCode {
     let stderr = std::io::stderr();
     let mut out = std::io::BufWriter::new(stdout.lock());
     let mut err = stderr.lock();
+    for var in lcoat_format::clock::ignored_overrides() {
+        use std::io::Write;
+        let _ = writeln!(
+            err,
+            "warning: {var} is ignored: release builds always use the system clock"
+        );
+    }
     let code = cli::run(&args, &mut out, &mut err);
     std::process::ExitCode::from(u8::try_from(code).unwrap_or(1))
 }
