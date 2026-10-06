@@ -185,6 +185,18 @@ Everything above except the last clause is done and checked by `conformance/cros
 Twice in the field a `<placeholder>` in a pasted command became a shell redirect (one of them let `op start` run on an undeclared target). Commands that create something now end with `next: lcoat ...` lines carrying the real ids, quoted for bash and zsh (`'...'` with `'\''`; plain words bare): `target add` (start an operation, or a note that a non-in-scope target will not be contacted), `finding add` (resolve or accept that finding), `op close` (closeout by name), and `adapter run`, which prints one ready-to-run `finding add` per proposed finding with this run's evidence id. Titles there come from service banners chosen by the scanned host, so the quoting is tested through a real bash with command substitution, backticks, quotes and globs, and a printed line is executed in the CLI tests. `op status` gains an `Adapter Runs:` line when there are any (the shell's `Recon Runs` counts a different feature and stays as it is, so shell-written operations print byte-identically).
 
 This also closed a quiet gap: the trust chain used to take any recorded review packet as verified without reading it (inherited from Lite). It now verifies the latest one, so a changed finding index after the review shows `Accepted Risk Review Packet: attention-required`.
+### `evidence verify` cross-checks where a capture is recorded (review 2026-10-05)
+
+A capture is recorded three times: the index (`evidence.ndjson`), the format 1.1 manifest, and the ledger's `artifact.created` event (`evidence=<id> ... sha256=<hash> path=<path>`, the same in all three builds). `evidence verify` read the index alone, so emptying it gave `verified, checked 0`, appending a newer record with a new hash re-blessed an edited artifact (the latest record wins), and a `..` path was followed out of the operation. It now also reports:
+
+| Status | Meaning |
+| --- | --- |
+| `unindexed` | the manifest or the ledger records a capture the index no longer lists |
+| `conflict` | the index's hash or path disagrees with an earlier index record for the ID, the manifest or the ledger (a redaction keeps both, so it never conflicts) |
+| `unsafe` | the stored path is absolute or has a `..` component; it is not opened |
+
+Shell- and Lite-written operations have no manifest; their ledger still names every capture, so the check applies to them too, and a clean operation prints exactly as before (`readonly_diff.sh` unchanged). The trust chain uses the same function. `tamper_rust.sh` case 2 (manifest and index forged together) is now also caught by `evidence verify`, through the ledger; case 3b empties the index. Still a limit: someone who edits the artifact, the index, the manifest and the ledger event and recomputes the chain from there is caught only by packets written earlier or a recorded checkpoint.
+
 ### The script adapter is bound to the scoped target (review 2026-10-05)
 
 `adapter run script node --tier 2 -- /bin/echo 8.8.8.8` ran after a preflight for 127.0.0.1: the adapter ignored the `ScopedTarget` it was handed, so THREAT_MODEL's "nothing above Tier 0 contacts a target not recorded in-scope" was false for scripts.
