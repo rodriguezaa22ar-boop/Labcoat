@@ -632,7 +632,7 @@ fn trust_chain(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
         .map(|h| h.as_str().to_owned())
         .unwrap_or_default();
     let count = ledger::count(&ledger_file).unwrap_or(0);
-    let chain = lcoat_core::chain::verify(&ledger::read_objects(&ledger_file).unwrap_or_default());
+    let chain = ledger_word(&tc.ledger);
 
     if json {
         let mut o = Object::new();
@@ -706,7 +706,7 @@ fn trust_chain(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
         l.insert("file", s(&ledger_file.display().to_string()));
         l.insert("events", n(count));
         l.insert("sha256", s(&sha));
-        l.insert("chain", s(&chain_word(&chain)));
+        l.insert("chain", s(&chain));
         l.insert("latest_at", s(&none(&st.latest_ledger.at)));
         l.insert("latest_event", s(&none(&st.latest_ledger.event)));
         o.insert("ledger", Value::Object(l));
@@ -829,11 +829,20 @@ fn trust_chain(ctx: &mut Ctx<'_>, args: &[String]) -> CmdResult {
             none(&st.latest_ledger.event)
         ),
     );
-    ctx.kv("Ledger Chain", &chain_word(&chain));
+    ctx.kv("Ledger Chain", &chain);
     if strict && tc.status != "current" {
         Err(CliError::Exit(1))
     } else {
         Ok(())
+    }
+}
+
+/// The `Ledger Chain` line: the chain state, or why there is none.
+fn ledger_word(li: &packet::LedgerIntegrity) -> String {
+    match li {
+        packet::LedgerIntegrity::Chain(c) => chain_word(c),
+        packet::LedgerIntegrity::Missing => "missing".into(),
+        packet::LedgerIntegrity::Unreadable(e) => format!("unreadable ({e})"),
     }
 }
 
