@@ -3,9 +3,12 @@
 //! The record is the shell build's (`atlas_approval_append_current`) with
 //! one additive field, `expires_at`. The shell and Lite treat any record with
 //! `status: approved` for the capability and target as current; Lab Coat is
-//! stricter on purpose: the *latest* record for the pair must be `approved`
-//! and unexpired, so a `revoked` record ends a grant and a grant cannot be
-//! open-ended. A reason and an expiry are mandatory. Tier 4 and 5 cannot be
+//! stricter on purpose: the *latest* record for this operation, capability
+//! and target must be `approved`, carry the capability's tier, and have an
+//! `expires_at` that parses and is still ahead. So a `revoked` record ends a
+//! grant, a record copied from another operation grants nothing, and a
+//! record with no or an unreadable expiry (every shell- or Lite-written one)
+//! is not current: a grant cannot be open-ended. A reason and an expiry are mandatory. Tier 4 and 5 cannot be
 //! granted at all: [`grant`] refuses them before touching the file, and the
 //! preflight refuses them before consulting approvals.
 
@@ -84,11 +87,15 @@ impl Grant {
         o
     }
 
-    /// Whether this record is `approved` and unexpired at `now`
-    /// (`YYYY-MM-DDTHH:MM:SSZ` strings compare lexically).
-    pub fn is_current(&self, now: &str) -> bool {
+    /// Whether this record is an `approved` grant for `capability` that is
+    /// unexpired at `now`. The expiry is parsed, never compared as text:
+    /// `"9999"` or `"garbage"` used to sort after any timestamp and so
+    /// never expired. Missing or unparseable means not current.
+    pub fn is_current(&self, capability: Tier, now: Utc) -> bool {
         self.status == "approved"
-            && (self.expires_at.is_empty() || now.as_bytes() < self.expires_at.as_bytes())
+            && self.capability == capability.capability()
+            && self.tier == (capability as u8).to_string()
+            && Utc::parse(&self.expires_at).is_some_and(|until| now < until)
     }
 }
 
@@ -110,9 +117,9 @@ pub fn list(op_dir: &Path) -> Result<Vec<Grant>> {
         .collect())
 }
 
-/// Whether a current grant exists: the latest record for this capability
-/// and target is `approved` and unexpired at `now`.
-pub fn current(op_dir: &Path, capability: Tier, target: &str, now: &str) -> bool {
+/// Whether a current grant exists: the latest record for operation `op`,
+/// this capability and target is current at `now` ([`Grant::is_current`]).
+pub fn current(op_dir: &Path, op: &str, capability: Tier, target: &str, now: Utc) -> bool {
     let Ok(records) = list(op_dir) else {
         return false;
     };
@@ -122,8 +129,8 @@ pub fn current(op_dir: &Path, capability: Tier, target: &str, now: &str) -> bool
     records
         .iter()
         .rev()
-        .find(|g| g.capability == capability.capability() && ids.contains(&g.target))
-        .is_some_and(|g| g.is_current(now))
+        .find(|g| g.op == op && g.capability == capability.capability() && ids.contains(&g.target))
+        .is_some_and(|g| g.is_current(capability, now))
 }
 
 /// Inputs to [`grant`].
@@ -197,7 +204,7 @@ pub fn grant(op: &Operation<Active>, p: &GrantParams) -> Result<Grant> {
 pub fn revoke(op: &Operation<Active>, capability: Tier, reason: &MetadataOnly) -> Result<Grant> {
     let cap = capability.capability();
     let _lock = op.lock()?;
-    if !current(&op.dir, capability, &op.target, &clock::timestamp()) {
+    if !current(&op.dir, &op.slug, capability, &op.target, Utc::now()) {
         fail!(
             "no current approval for capability '{cap}' on target '{}'",
             op.target
@@ -229,38 +236,20 @@ pub fn revoke(op: &Operation<Active>, capability: Tier, reason: &MetadataOnly) -
 mod tests {
     use super::*;
 
+    fn at(s: &str) -> Utc {
+        Utc::parse(s).unwrap()
+    }
+
     #[test]
     fn current_follows_the_latest_record_and_the_clock() {
         let dir = std::env::temp_dir().join(format!("lcoat-approval-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let p = file(&dir);
-        assert!(!current(
-            &dir,
-            Tier::SafeValidation,
-            "t",
-            "2026-10-02T00:00:00Z"
-        ));
-        // A shell-written record has no expiry and is current forever, as the shell intends.
-        std::fs::write(&p, "{\"ts\":\"2026-10-01T00:00:00Z\",\"op\":\"o\",\"target\":\"t\",\"capability\":\"safe-validation\",\"tier\":\"3\",\"approved_by\":\"me\",\"reason\":\"r\",\"status\":\"approved\"}\n").unwrap();
-        assert!(current(
-            &dir,
-            Tier::SafeValidation,
-            "t",
-            "2030-01-01T00:00:00Z"
-        ));
-        assert!(!current(
-            &dir,
-            Tier::SafeValidation,
-            "other",
-            "2030-01-01T00:00:00Z"
-        ));
-        assert!(!current(
-            &dir,
-            Tier::ActiveRecon,
-            "t",
-            "2030-01-01T00:00:00Z"
-        ));
+        let now = at("2026-10-02T12:00:00Z");
+        let cur = |target: &str, cap: Tier, when: Utc| current(&dir, "o", cap, target, when);
+        assert!(!cur("t", Tier::SafeValidation, now));
+
         // A Lab Coat record expires; a revocation ends it immediately.
         let g = Grant {
             ts: "2026-10-02T00:00:00Z".into(),
@@ -274,38 +263,92 @@ mod tests {
             expires_at: "2026-10-03T00:00:00Z".into(),
         };
         ndjson::append(&p, &g.to_object()).unwrap();
-        assert!(current(
-            &dir,
-            Tier::SafeValidation,
-            "t",
-            "2026-10-02T12:00:00Z"
-        ));
-        assert!(!current(
-            &dir,
-            Tier::SafeValidation,
-            "t",
-            "2026-10-03T00:00:00Z"
-        ));
+        assert!(cur("t", Tier::SafeValidation, now));
+        assert!(!cur("other", Tier::SafeValidation, now));
+        assert!(!cur("t", Tier::ActiveRecon, now));
+        assert!(!cur("t", Tier::SafeValidation, at("2026-10-03T00:00:00Z")));
         let r = Grant {
             status: "revoked".into(),
             expires_at: String::new(),
             ..g.clone()
         };
         ndjson::append(&p, &r.to_object()).unwrap();
-        assert!(!current(
-            &dir,
-            Tier::SafeValidation,
-            "t",
-            "2026-10-02T12:00:00Z"
-        ));
+        assert!(!cur("t", Tier::SafeValidation, now));
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(
             text.lines()
-                .nth(1)
+                .next()
                 .unwrap()
                 .ends_with("\"status\":\"approved\",\"expires_at\":\"2026-10-03T00:00:00Z\"}")
         );
-        assert_eq!(list(&dir).unwrap().len(), 3);
+        assert_eq!(list(&dir).unwrap().len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Review 2026-10-05: `expires_at` compared as text, so "9999" and
+    /// "garbage" never expired; the `op` field was ignored; no expiry meant
+    /// forever.
+    #[test]
+    fn an_expiry_that_does_not_parse_or_another_operation_grants_nothing() {
+        let dir = std::env::temp_dir().join(format!("lcoat-approval-bad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = at("2026-10-02T12:00:00Z");
+        let good = Grant {
+            ts: "2026-10-02T00:00:00Z".into(),
+            op: "o".into(),
+            target: "t".into(),
+            capability: "safe-validation".into(),
+            tier: "3".into(),
+            approved_by: "me".into(),
+            reason: "r".into(),
+            status: "approved".into(),
+            expires_at: "2026-10-03T00:00:00Z".into(),
+        };
+        let only = |g: &Grant| {
+            let _ = std::fs::remove_file(file(&dir));
+            ndjson::append(&file(&dir), &g.to_object()).unwrap();
+            current(&dir, "o", Tier::SafeValidation, "t", now)
+        };
+        assert!(only(&good));
+        for bad in [
+            "",
+            "9999",
+            "garbage",
+            "2026-10-03",
+            "2026-13-01T00:00:00Z",
+            "２026-10-03T00:00:00Z",
+        ] {
+            assert!(
+                !only(&Grant {
+                    expires_at: bad.into(),
+                    ..good.clone()
+                }),
+                "{bad:?}"
+            );
+        }
+        assert!(!only(&Grant {
+            op: "other-op".into(),
+            ..good.clone()
+        }));
+        assert!(!only(&Grant {
+            tier: "2".into(),
+            ..good.clone()
+        }));
+        assert!(!only(&Grant {
+            tier: String::new(),
+            ..good.clone()
+        }));
+        // A record for another operation neither grants nor revokes.
+        let _ = std::fs::remove_file(file(&dir));
+        ndjson::append(&file(&dir), &good.to_object()).unwrap();
+        let foreign = Grant {
+            op: "other-op".into(),
+            status: "revoked".into(),
+            ..good.clone()
+        };
+        ndjson::append(&file(&dir), &foreign.to_object()).unwrap();
+        assert!(current(&dir, "o", Tier::SafeValidation, "t", now));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -963,6 +963,47 @@ fn next_lines_run_as_printed() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Review 2026-10-05: an approval's expiry was compared as text, so a
+/// hand-written "9999" never expired, and a record naming another operation
+/// was honoured.
+#[test]
+fn an_approval_record_must_parse_and_belong_to_this_operation() {
+    let root = fresh("approval-text");
+    ok(&lcoat(
+        &root,
+        &[
+            "target",
+            "add",
+            "box",
+            "127.0.0.1",
+            "--scope-status",
+            "in-scope",
+        ],
+    ));
+    ok(&lcoat(&root, &["op", "start", "t", "box"]));
+    let check = || lcoat(&root, &["scope", "check", "safe-validation", "box"]);
+    let approvals = root.join("sessions/t/approvals.ndjson");
+    let record = |op: &str, expires: &str| {
+        format!(
+            "{{\"ts\":\"2026-10-02T07:00:00Z\",\"op\":\"{op}\",\"target\":\"box\",\"capability\":\"safe-validation\",\"tier\":\"3\",\"approved_by\":\"me\",\"reason\":\"r\",\"status\":\"approved\",\"expires_at\":\"{expires}\"}}\n"
+        )
+    };
+    for (op, expires) in [
+        ("t", "9999"),
+        ("t", "garbage"),
+        ("other", "2026-10-09T00:00:00Z"),
+    ] {
+        std::fs::write(&approvals, record(op, expires)).unwrap();
+        assert!(
+            err(&check()).contains("approval required"),
+            "{op} {expires}"
+        );
+    }
+    std::fs::write(&approvals, record("t", "2026-10-09T00:00:00Z")).unwrap();
+    assert!(ok(&check()).contains("ok: scope allowed"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// Review 2026-10-05: `evidence verify` trusted the index alone. Emptying
 /// it gave `verified, checked 0`; a newer index record with a new hash
 /// re-blessed an edited artifact; a `..` path was followed. The index is

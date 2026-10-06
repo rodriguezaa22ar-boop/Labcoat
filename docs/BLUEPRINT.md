@@ -197,6 +197,14 @@ A capture is recorded three times: the index (`evidence.ndjson`), the format 1.1
 
 Shell- and Lite-written operations have no manifest; their ledger still names every capture, so the check applies to them too, and a clean operation prints exactly as before (`readonly_diff.sh` unchanged). The trust chain uses the same function. `tamper_rust.sh` case 2 (manifest and index forged together) is now also caught by `evidence verify`, through the ledger; case 3b empties the index. Still a limit: someone who edits the artifact, the index, the manifest and the ledger event and recomputes the chain from there is caught only by packets written earlier or a recorded checkpoint.
 
+### Approvals: parsed expiry, this operation, this tier (review 2026-10-05)
+
+An approval was current when its `expires_at` sorted after the current timestamp as text, so a hand-edited `"9999"` or `"garbage"` never expired. A record naming another operation (copied in with the directory) was honoured, and a record with no expiry was current forever.
+
+- `Grant::is_current` parses `expires_at` with the same strict parser as every other timestamp (`Utc::parse`); missing or unparseable means not current. It also requires the record's `tier` to be the capability's tier.
+- `approval::current` only looks at records whose `op` is this operation, so another operation's grant neither grants nor revokes here.
+- A deliberate divergence: shell- and Lite-written approvals have no `expires_at` and are no longer current in Lab Coat. Re-grant with `approval grant ... --expires`. The conformance scenario records no approvals, so its output is unchanged.
+
 ### One lock per command, checked after it is taken (review 2026-10-05)
 
 Quality bar item 3 says a mutating command holds the lock for its whole duration. Two places did not:

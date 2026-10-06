@@ -419,7 +419,7 @@ impl<S: State> Operation<S> {
     /// Whether a current (approved, unexpired) approval exists for this
     /// capability and target. See [`crate::approval`].
     pub fn has_approval(&self, capability: Tier, target: &str) -> bool {
-        crate::approval::current(&self.dir, capability, target, &clock::timestamp())
+        crate::approval::current(&self.dir, &self.slug, capability, target, clock::Utc::now())
     }
 
     /// Whether the record says `closed`.
