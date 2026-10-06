@@ -23,6 +23,7 @@ use lcoat_format::ndjson;
 
 use crate::error::Result;
 use crate::fail;
+use crate::lock::Lock;
 use crate::metadata::MetadataOnly;
 use crate::operation::{Active, Operation};
 use crate::root::{TOOL_NAME, file_exists};
@@ -198,6 +199,14 @@ pub fn manifest(op_dir: &Path) -> Result<Vec<ManifestEntry>> {
 /// verify the copy, append the index record, append the manifest, append
 /// the ledger event. Returns the index record.
 pub fn add(op: &Operation<Active>, p: &AddParams) -> Result<Record> {
+    let lock = op.lock()?;
+    add_locked(op, p, &lock)
+}
+
+/// [`add`] for a caller that already holds the operation lock (the adapter
+/// runner holds it for the whole run, so a second lock here would wait on
+/// itself).
+pub fn add_locked(op: &Operation<Active>, p: &AddParams, _held: &Lock) -> Result<Record> {
     if !file_exists(&p.source) {
         fail!("evidence path is not a file: {}", p.source.display());
     }
@@ -223,7 +232,6 @@ pub fn add(op: &Operation<Active>, p: &AddParams) -> Result<Record> {
         p.tool.as_str()
     };
 
-    let _lock = op.lock()?;
     op.preflight(Tier::ReadOnly, tool, target, "add evidence artifact")?
         .into_result()?;
 
