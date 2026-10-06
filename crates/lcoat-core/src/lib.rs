@@ -32,6 +32,7 @@
 pub mod approval;
 pub mod chain;
 pub mod crash;
+pub mod doctor;
 pub mod error;
 pub mod evidence;
 pub mod findings;

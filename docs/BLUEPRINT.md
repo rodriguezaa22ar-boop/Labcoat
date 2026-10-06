@@ -197,6 +197,21 @@ A capture is recorded three times: the index (`evidence.ndjson`), the format 1.1
 
 Shell- and Lite-written operations have no manifest; their ledger still names every capture, so the check applies to them too, and a clean operation prints exactly as before (`readonly_diff.sh` unchanged). The trust chain uses the same function. `tamper_rust.sh` case 2 (manifest and index forged together) is now also caught by `evidence verify`, through the ledger; case 3b empties the index. Still a limit: someone who edits the artifact, the index, the manifest and the ledger event and recomputes the chain from there is caught only by packets written earlier or a recorded checkpoint.
 
+### `lcoat doctor` (phase 3)
+
+The shell's `atlas doctor` checks its runtime (directories, `jq`, `sha256sum`, the wiremap and vector adapters). Lab Coat has no runtime dependencies, so a port would check nothing; `lcoat doctor [--json]` instead checks what the field runs actually tripped over, before a run rather than during one. Same row layout as the shell (label in 24 columns, `ok`/`warn`/`fail` in 8, detail), the same `Status` / `Failures` / `Warnings` footer, exit 1 on any `fail`. `--json` is `lcoat.doctor.v1`: build facts, counts and every row.
+
+| Section | Rows | Why |
+| --- | --- | --- |
+| Lab Root | root variable (unset is `fail`; `LAB_ROOT` shadowing a different `LCOAT_ROOT` is `warn`), root, root permissions (anything but owner-only is `warn`), `etc/lab.env` / `LAB_CONFIG` | field test 1 (lab data in `$HOME`); a relative root makes one lab per directory |
+| Layout | state, targets, sessions, reports, atlas state (path, and the variable or config that moved it), scope profiles | a moved directory is otherwise invisible |
+| Records | ownership (any entry not owned by the root's owner is `fail`, with the `chown` to run), file permissions, symlinks, leftover `.<name>.<pid>.tmp` from an interrupted write | `sudo lcoat adapter run nmap` for a SYN scan leaves root-owned files the next unprivileged run cannot update; Lab Coat never writes a symlink |
+| Operations | the active pointer as recorded (a pointer to a missing operation is `fail`; `active_slug` hides it), then one row per operation: status, event count, chain status, evidence re-hash | an operation that fails to load is skipped by `op list`; a broken chain or an edited artifact is named here before any packet is written |
+| Tools | `nmap` (resolved exactly as an adapter run resolves it, with `nmap --version`; found only outside the scrubbed `PATH`, e.g. Homebrew's `/opt/homebrew/bin`, is `fail` saying so), privileges (unprivileged nmap uses connect scans and may call a filtered host down: field run 1) | tells "not installed" from "installed where Lab Coat does not look" |
+| Clock | `LCOAT_NOW` / `ATLAS_TODAY` set (`warn`: every record gets the frozen instant), system clock before 2026-01-01 (`fail`) | expiries and approvals are judged against this clock |
+
+Strictly read-only: nothing is created, opened for writing or locked under the root (the CLI test snapshots every path, size and mtime around a run), so it is safe beside a running command and on a root that does not exist yet (one `warn` row, no layout rows). The process probes (`nmap --version`) live in `lcoat-adapters`, which stays the only crate that spawns a process; the effective uid comes from `/proc/self/status` (unknown elsewhere, said so). Not checked, on purpose: packets (that is `op trust-chain`), network reachability (that would contact a target), and anything needing root.
+
 ### The frozen clock is a test fixture (review 2026-10-05)
 
 `LCOAT_NOW` (and the shell's `ATLAS_TODAY`) froze the clock in every build, release binaries included, and was not documented for operators. A stale export left over from a conformance run makes an expired Tier 3 grant current again and stamps every record with the wrong time.
