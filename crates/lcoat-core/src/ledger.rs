@@ -360,6 +360,11 @@ impl Ledger {
         let mut f = opts.open(&self.path)?;
         f.lock()?;
         let result = (|| -> Result<()> {
+            // A half-written last event would make the tail unreadable and
+            // the new event unparseable; refuse and name the repair.
+            if let Some(n) = lcoat_format::fsutil::torn_tail(&f)? {
+                return Err(lcoat_format::fsutil::torn_tail_error(&self.path, n).into());
+            }
             let prev = Self::head_hash(&self.path)?;
             let obj = crate::chain::link(event.to_object(), prev.as_ref());
             let mut line = compact(&Value::Object(obj));

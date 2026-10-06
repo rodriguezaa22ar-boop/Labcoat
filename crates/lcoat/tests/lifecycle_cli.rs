@@ -1143,6 +1143,89 @@ fn a_broken_ledger_chain_is_never_current_and_never_anchored() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Review 2026-10-05: after an interrupted append, the next `evidence add`
+/// glued its record onto the fragment, and a torn ledger tail blocked every
+/// later write with no way out. Appends now refuse a torn tail and name
+/// `op repair-tail`, which sets the fragment aside and records the repair.
+#[test]
+fn a_torn_tail_is_refused_then_repaired_and_recorded() {
+    let root = fresh("torn-tail");
+    std::fs::write(root.join("scan.txt"), b"22/tcp open ssh\n").unwrap();
+    ok(&lcoat(
+        &root,
+        &[
+            "target",
+            "add",
+            "box",
+            "127.0.0.1",
+            "--scope-status",
+            "in-scope",
+        ],
+    ));
+    ok(&lcoat(&root, &["op", "start", "demo", "box"]));
+    let scan = root.join("scan.txt");
+    ok(&lcoat(&root, &["evidence", "add", scan.to_str().unwrap()]));
+    let op_dir = root.join("sessions/demo");
+    let index = op_dir.join("evidence.ndjson");
+    let ledger = op_dir.join("ledger.ndjson");
+    let index_before = std::fs::read(&index).unwrap();
+    let ledger_before = std::fs::read(&ledger).unwrap();
+
+    // What a crash in the middle of two appends leaves behind.
+    let append = |p: &std::path::Path, b: &[u8]| {
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(p)
+            .unwrap()
+            .write_all(b)
+            .unwrap();
+    };
+    append(&index, b"{\"id\":\"ev_tor");
+    append(&ledger, b"{\"ts\":\"2026-10-02T07:40:00Z\",\"ev");
+
+    let e = err(&lcoat(&root, &["evidence", "add", scan.to_str().unwrap()]));
+    assert!(e.contains("ends in a partial record"), "{e}");
+    assert!(e.contains("lcoat op repair-tail"), "{e}");
+    assert!(std::fs::read(&index).unwrap().ends_with(b"ev_tor"));
+
+    let out = ok(&lcoat(&root, &["op", "repair-tail"]));
+    assert!(out.contains("repaired: evidence.ndjson (13 bytes"), "{out}");
+    assert!(out.contains("repaired: ledger.ndjson (32 bytes"), "{out}");
+    assert!(
+        out.contains("recorded: 2 op.tail-repaired event(s)"),
+        "{out}"
+    );
+    assert_eq!(std::fs::read(&index).unwrap(), index_before);
+    let ledger_after = std::fs::read(&ledger).unwrap();
+    assert!(ledger_after.starts_with(&ledger_before));
+    let tail = String::from_utf8_lossy(&ledger_after[ledger_before.len()..]).into_owned();
+    assert_eq!(tail.lines().count(), 2, "{tail}");
+    assert!(
+        tail.contains(r#""event":"op.tail-repaired""#)
+            && tail.contains("file=evidence.ndjson bytes=13")
+            && tail.contains("kept=repaired/evidence.ndjson."),
+        "{tail}"
+    );
+    let kept: Vec<Vec<u8>> = std::fs::read_dir(op_dir.join("repaired"))
+        .unwrap()
+        .map(|e| std::fs::read(e.unwrap().path()).unwrap())
+        .collect();
+    assert!(kept.contains(&b"{\"id\":\"ev_tor".to_vec()), "{kept:?}");
+
+    // The chain is intact, writes work again, and a second repair is a no-op.
+    let chain = ok(&lcoat(&root, &["ledger", "chain-verify", "demo"]));
+    assert!(chain.contains("verified"), "{chain}");
+    ok(&lcoat(
+        &root,
+        &["ledger", "verify", ledger.to_str().unwrap()],
+    ));
+    ok(&lcoat(&root, &["evidence", "add", scan.to_str().unwrap()]));
+    ok(&lcoat(&root, &["evidence", "verify"]));
+    assert!(ok(&lcoat(&root, &["op", "repair-tail"])).contains("nothing to repair"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// Review 2026-10-05: a command loaded its operation, then waited for the
 /// lock; if `op close` ran meanwhile, `evidence add` appended to the closed
 /// operation. The state is now checked again once the lock is held.

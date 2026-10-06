@@ -76,14 +76,60 @@ pub fn write_private(path: &Path, data: &[u8]) -> io::Result<()> {
 /// file 0600. The write is a single `write_all` followed by `sync_data`, so
 /// a crash leaves either the whole line or nothing (for lines under the
 /// filesystem's atomic append size, which every record here is).
+///
+/// A file that does not end in a newline holds a record an interrupted
+/// append left half-written; appending would glue the new record onto it
+/// and lose both, so this refuses ([`torn_tail_error`]) and writes nothing.
 pub fn append_locked(path: &Path, line: &[u8]) -> io::Result<()> {
-    let mut f = open_private(path, OpenOptions::new().append(true).create(true))?;
+    let mut f = open_private(
+        path,
+        OpenOptions::new().read(true).append(true).create(true),
+    )?;
     let locked = f.lock().is_ok();
-    let written = f.write_all(line).and_then(|()| f.sync_data());
+    let written = match torn_tail(&f) {
+        Ok(Some(n)) => Err(torn_tail_error(path, n)),
+        Ok(None) => f.write_all(line).and_then(|()| f.sync_data()),
+        Err(e) => Err(e),
+    };
     if locked {
         let _ = f.unlock();
     }
     written
+}
+
+/// How many bytes follow the last newline of `f`: the length of a record an
+/// interrupted append left half-written. `None` for an empty file or one
+/// that ends in a newline. Reads backwards from the end, so it costs one
+/// small read for any well-formed file.
+pub fn torn_tail(f: &File) -> io::Result<Option<u64>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut r = f.try_clone()?;
+    let len = r.metadata()?.len();
+    let mut end = len;
+    let mut buf = [0u8; 4096];
+    while end > 0 {
+        let start = end.saturating_sub(buf.len() as u64);
+        let n = usize::try_from(end - start).unwrap_or(buf.len());
+        r.seek(SeekFrom::Start(start))?;
+        r.read_exact(&mut buf[..n])?;
+        if let Some(i) = buf[..n].iter().rposition(|&b| b == b'\n') {
+            let tail = len - (start + i as u64 + 1);
+            return Ok((tail > 0).then_some(tail));
+        }
+        end = start;
+    }
+    Ok((len > 0).then_some(len))
+}
+
+/// The refusal for a write onto a torn tail; names the repair command.
+pub fn torn_tail_error(path: &Path, bytes: u64) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "{} ends in a partial record ({bytes} bytes after the last newline), left by an interrupted write; nothing was appended. `lcoat op repair-tail` sets the fragment aside and records the repair in the ledger",
+            path.display()
+        ),
+    )
 }
 
 /// Copy `src` to `dst` (which must not exist) with mode 0600, streaming,
@@ -106,6 +152,44 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         mkdir_private(&d).unwrap();
         d
+    }
+
+    /// Review 2026-10-05: after a partial append, the next record was glued
+    /// onto the fragment and both were lost.
+    #[test]
+    fn append_refuses_a_torn_tail_and_writes_nothing() {
+        let d = tmpdir("torn");
+        let p = d.join("index.ndjson");
+        fs::write(&p, b"{\"a\":1}\n{\"b\":").unwrap();
+        let e = append_locked(&p, b"{\"c\":3}\n").unwrap_err();
+        assert!(
+            e.to_string().contains("ends in a partial record (5 bytes"),
+            "{e}"
+        );
+        assert!(e.to_string().contains("lcoat op repair-tail"), "{e}");
+        assert_eq!(fs::read(&p).unwrap(), b"{\"a\":1}\n{\"b\":");
+    }
+
+    #[test]
+    fn torn_tail_measures_what_follows_the_last_newline() {
+        let d = tmpdir("tail");
+        let p = d.join("f");
+        let tail = |bytes: &[u8]| {
+            fs::write(&p, bytes).unwrap();
+            torn_tail(&File::open(&p).unwrap()).unwrap()
+        };
+        assert_eq!(tail(b""), None);
+        assert_eq!(tail(b"x\n"), None);
+        assert_eq!(tail(b"x\nyz"), Some(2));
+        assert_eq!(tail(b"no newline at all"), Some(17));
+        // Longer than one backward read.
+        let mut big = vec![b'a'; 10_000];
+        big.push(b'\n');
+        big.extend_from_slice(&[b'b'; 5000]);
+        assert_eq!(tail(&big), Some(5000));
+        let mut whole = vec![b'a'; 9000];
+        whole.push(b'\n');
+        assert_eq!(tail(&whole), None);
     }
 
     #[test]
