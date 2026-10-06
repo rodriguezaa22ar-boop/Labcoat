@@ -51,8 +51,21 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: fuzz
+      # A pinned version, so rust-cache's cached ~/.cargo/bin is reused
+      # instead of rebuilding cargo-fuzz whenever a new release appears.
       - name: install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+        run: cargo install cargo-fuzz --locked --version 0.13.2
+      # The harness resolves exactly the committed fuzz/Cargo.lock.
+      - name: fuzz lockfile is current
+        run: cargo metadata --locked --format-version 1 --manifest-path fuzz/Cargo.toml >/dev/null
+      # The corpus each target has grown so far (saved by main and the
+      # nightly run below; pull requests restore it but do not save).
+      - name: restore grown corpus
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
       - name: seed corpus
         run: cargo run --quiet -p lcoat-fuzz -- seeds ${{ matrix.target }} fuzz/corpus
       - name: fuzz
@@ -61,6 +74,16 @@ jobs:
         run: |
           cargo +nightly fuzz run ${{ matrix.target }} fuzz/corpus/${{ matrix.target }} -- \
             -max_total_time="$SECONDS_PER_TARGET" -max_len=65536 -timeout=10 -rss_limit_mb=2048
+      # Merge into a minimal set before saving, so the cache stays small.
+      - name: minimize corpus
+        if: success() && github.event_name != 'pull_request'
+        run: cargo +nightly fuzz cmin ${{ matrix.target }} fuzz/corpus/${{ matrix.target }} -- -max_len=65536 -timeout=10
+      - name: save grown corpus
+        if: success() && github.event_name != 'pull_request'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
       - name: keep crashing inputs
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

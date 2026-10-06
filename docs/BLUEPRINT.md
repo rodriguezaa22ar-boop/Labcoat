@@ -228,7 +228,7 @@ Strictly read-only: nothing is created, opened for writing or locked under the r
 
 ### Fuzzing (after phase 2)
 
-Thirteen targets, each a function in `crates/lcoat-fuzz/src/targets.rs` that feeds bytes to a parser the way the binary does and asserts what makes the parser safe to trust, not only that it does not panic:
+Fourteen targets, each a function in `crates/lcoat-fuzz/src/targets.rs` that feeds bytes to a parser the way the binary does and asserts what makes the parser safe to trust, not only that it does not panic:
 
 | Target | Input | Invariants beyond "no panic, no hang" |
 | --- | --- | --- |
@@ -240,6 +240,7 @@ Thirteen targets, each a function in `crates/lcoat-fuzz/src/targets.rs` that fee
 | `envfile` | operation, scope, target, profile records | records round-trip; any string quoted as one value reads back as that value and never as a second key |
 | `metadata_scan` | free text | scanner verdicts are consistent and stable |
 | `timestamp` | expiries, ledger times | accepted strings are canonical (one spelling per instant) |
+| `expiry` | `--expires` on approvals and accepted risks | an accepted expiry prints back canonically and is at most year 9999; relative forms (`Nh`, `Nd`) land in the future, never overflow |
 | `slug` | names that become paths | slugs stay in `[a-z0-9._-]`, idempotent; dot-only and hidden slugs are refused |
 | `packet_text`, `receipt` | packets, receipts | anchor readers return substrings without backticks or whitespace |
 | `op_files` | a whole closed operation with one file corrupted | every reader and verifier returns a verdict |
@@ -290,7 +291,7 @@ Fallback list if a hand-written piece proves costly (adopt with a one-line reaso
 3. **Three-way scenario:** one frozen-clock scenario through shell, Go and Rust; normalized diff; every verifier on every root (9 combinations, 27 runs).
 4. **Tamper cases, two tiers:** the shell's eight verdicts must be reproduced (`tamper.sh check`); six format 1.1 cases must fail only in Rust (`tamper_rust.sh`, with the shell and Lite run on the same roots to show the gap). Done in phase 2.
 5. **Property tests** over canonical JSON, envfile round trip, scanner.
-6. **Fuzzing**, two engines over one set of targets (done; see "Fuzzing" below). `crates/lcoat-fuzz` holds 13 targets, one per parser that reads untrusted bytes, each asserting safety invariants, plus a dependency-free mutational engine that runs them in every `cargo test`. `fuzz/` holds cargo-fuzz (libFuzzer, coverage-guided) harnesses calling the same functions; `.github/workflows/fuzz.yml` runs them on nightly, 45 s per target on every push and 10 min per target every night. Local builds and every other job stay on stable.
+6. **Fuzzing**, two engines over one set of targets (done; see "Fuzzing" below). `crates/lcoat-fuzz` holds 14 targets, one per parser that reads untrusted bytes, each asserting safety invariants, plus a dependency-free mutational engine that runs them in every `cargo test`. `fuzz/` holds cargo-fuzz (libFuzzer, coverage-guided) harnesses calling the same functions; `.github/workflows/fuzz.yml` runs them on nightly, 45 s per target on every push and 10 min per target every night, against the committed `fuzz/Cargo.lock` with a pinned cargo-fuzz; each target's grown corpus is minimized (`cargo fuzz cmin`) and cached by main and the nightly run, and every run, pull requests included, starts from it. Local builds and every other job stay on stable.
 7. **Compile-fail tests** for the type-level claims: std-only, each case a tiny downstream crate built with `cargo`, one package name per case (two packages with one name share a fingerprint and a failed case can pass as fresh). Done in phase 2.
 8. **Field validation:** re-run the Fedora lab assessment with Lab Coat; Lite verifies the result; the case study gets a third column.
 
