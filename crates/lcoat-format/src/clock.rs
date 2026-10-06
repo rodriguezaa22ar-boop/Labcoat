@@ -5,6 +5,12 @@
 //! a fixed RFC 3339 UTC instant, which the conformance harness uses to make
 //! three implementations agree on timestamps and IDs. `ATLAS_TODAY` pins
 //! the date alone, as the shell build allows.
+//!
+//! Both are test fixtures, honoured only by debug builds (`cargo test`, the
+//! conformance harnesses). A release binary ignores them: a stale export
+//! from a conformance run used to make expired Tier 3 grants valid and
+//! stamp every record with the wrong time. The CLI warns when one is set
+//! but ignored ([`ignored_overrides`]).
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -15,9 +21,10 @@ pub struct Utc {
 }
 
 impl Utc {
-    /// The current time, or the `LCOAT_NOW` override when set and valid.
+    /// The current time, or the `LCOAT_NOW` override when this build
+    /// honours it ([`FROZEN_CLOCK_ALLOWED`]) and it is set and valid.
     pub fn now() -> Self {
-        if let Ok(v) = std::env::var("LCOAT_NOW")
+        if let Some(v) = frozen("LCOAT_NOW", FROZEN_CLOCK_ALLOWED)
             && let Some(t) = Self::parse(&v)
         {
             return t;
@@ -116,14 +123,44 @@ pub fn timestamp() -> String {
     Utc::now().timestamp()
 }
 
-/// The shell build's `date -u +%F`, honouring `ATLAS_TODAY`.
+/// The shell build's `date -u +%F`, honouring `ATLAS_TODAY` where this
+/// build allows a frozen clock.
 pub fn today() -> String {
-    if let Ok(v) = std::env::var("ATLAS_TODAY")
-        && !v.is_empty()
-    {
+    if let Some(v) = frozen("ATLAS_TODAY", FROZEN_CLOCK_ALLOWED) {
         return v;
     }
     Utc::now().date()
+}
+
+/// Whether this build honours `LCOAT_NOW` and `ATLAS_TODAY`: debug builds
+/// only, so no release binary runs on a frozen clock.
+pub const FROZEN_CLOCK_ALLOWED: bool = cfg!(debug_assertions);
+
+/// The clock overrides, by name.
+pub const CLOCK_OVERRIDES: [&str; 2] = ["LCOAT_NOW", "ATLAS_TODAY"];
+
+fn frozen(var: &str, allowed: bool) -> Option<String> {
+    if !allowed {
+        return None;
+    }
+    std::env::var(var).ok().filter(|v| !v.is_empty())
+}
+
+/// The clock overrides that are set but ignored by this build, for the CLI
+/// to warn about. Empty in debug builds.
+pub fn ignored_overrides() -> Vec<&'static str> {
+    ignored_when(FROZEN_CLOCK_ALLOWED, &CLOCK_OVERRIDES)
+}
+
+fn ignored_when(allowed: bool, names: &[&'static str]) -> Vec<&'static str> {
+    if allowed {
+        return Vec::new();
+    }
+    names
+        .iter()
+        .copied()
+        .filter(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty()))
+        .collect()
 }
 
 // Howard Hinnant's proleptic Gregorian algorithms.
@@ -195,6 +232,19 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
 
 #[cfg(test)]
 mod tests {
+    /// Review 2026-10-05: `LCOAT_NOW` froze the clock in release binaries.
+    /// PATH stands in for a set override (tests cannot set variables
+    /// without `unsafe`).
+    #[test]
+    fn a_frozen_clock_is_honoured_only_where_allowed() {
+        assert!(super::frozen("PATH", true).is_some());
+        assert_eq!(super::frozen("PATH", false), None);
+        assert_eq!(super::ignored_when(false, &["PATH"]), ["PATH"]);
+        assert!(super::ignored_when(true, &["PATH"]).is_empty());
+        assert!(super::ignored_when(false, &["LCOAT_SURELY_UNSET_VAR"]).is_empty());
+        assert_eq!(super::FROZEN_CLOCK_ALLOWED, cfg!(debug_assertions));
+    }
+
     /// Found by fuzz target `timestamp`: signs, impossible dates and leap
     /// seconds were accepted and printed back in a different spelling.
     #[test]

@@ -194,6 +194,14 @@ Until now the chain was shown but never consulted: an event edited before any pa
 
 `conformance/tamper_rust.sh` case 4b edits an event, closes, and checks every refusal; case 4 now checks the verdict as well as the line. Still open (next): an operation Lab Coat started can be passed off as `unchained` by stripping the chain fields; that needs a format marker in `session.env`.
 
+### The frozen clock is a test fixture (review 2026-10-05)
+
+`LCOAT_NOW` (and the shell's `ATLAS_TODAY`) froze the clock in every build, release binaries included, and was not documented for operators. A stale export left over from a conformance run makes an expired Tier 3 grant current again and stamps every record with the wrong time.
+
+- Both are honoured only by debug builds (`clock::FROZEN_CLOCK_ALLOWED = cfg!(debug_assertions)`): `cargo test` and the conformance harnesses, which all use `target/debug/lcoat`. Release binaries (CI's static builds, anything an operator runs in the field) always use the system clock.
+- A release binary that sees either variable set prints `warning: LCOAT_NOW is ignored: release builds always use the system clock` on stderr, so a stale export is visible rather than silently obeyed or silently dropped. `lcoat doctor` also warns when either is set.
+- A deliberate divergence from the shell, which honours `ATLAS_TODAY` everywhere. The conformance scenario runs debug builds and is unchanged.
+
 ### Fuzzing (after phase 2)
 
 Thirteen targets, each a function in `crates/lcoat-fuzz/src/targets.rs` that feeds bytes to a parser the way the binary does and asserts what makes the parser safe to trust, not only that it does not panic:
