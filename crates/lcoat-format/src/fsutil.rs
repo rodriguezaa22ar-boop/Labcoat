@@ -7,13 +7,114 @@
 //! [`append_locked`] instead. Everything is created private (0600 files,
 //! 0700 directories), which the shell build does with `chmod` after the
 //! fact and Lite did at open time.
+//!
+//! No write follows a symbolic link (review 2026-10-05: a planted
+//! `manifest.ndjson` link made `evidence add` append outside the root, and a
+//! `reports/` link made `op report` write there). [`check_write_path`]
+//! refuses a link at the file itself and at every directory between the lab
+//! root ([`confine_writes`]) and the file; appends also open with
+//! `O_NOFOLLOW` where the flag's value is known, and tighten an existing
+//! file's mode to 0600.
 
+use std::cell::RefCell;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-/// `mkdir -p` with mode 0700 on every created directory.
+thread_local! {
+    static WRITE_ROOT: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+/// Declare the lab root for this thread's writes: below it, no directory on
+/// the way to a written file may be a symbolic link. (The root itself may
+/// be one; `LAB_*_DIR` settings that point elsewhere are honoured, with the
+/// file and its parent still checked.) Set by `LabRoot::at`.
+pub fn confine_writes(root: &Path) {
+    WRITE_ROOT.with(|r| *r.borrow_mut() = Some(root.to_path_buf()));
+}
+
+fn is_symlink(p: &Path) -> bool {
+    fs::symlink_metadata(p)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+/// Refuse to write `path` if it, or a directory between the lab root and
+/// it (only its parent, when it is not under the root), is a symbolic link.
+pub fn check_write_path(path: &Path) -> io::Result<()> {
+    let root = WRITE_ROOT.with(|r| r.borrow().clone());
+    let below_root = root
+        .as_deref()
+        .filter(|r| path.starts_with(r) && path != *r);
+    let mut checked = vec![path];
+    match below_root {
+        Some(r) => checked.extend(path.ancestors().skip(1).take_while(|a| *a != r)),
+        None => checked.extend(path.parent()),
+    }
+    for p in checked {
+        if is_symlink(p) {
+            let what = if p == path {
+                "it is a symbolic link".to_owned()
+            } else {
+                format!("the directory {} is a symbolic link", p.display())
+            };
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "refusing to write {}: {what}, which could send lab data outside the lab root; replace it with a real file or directory (to keep data elsewhere, set LAB_SESSIONS_DIR or LAB_REPORTS_DIR instead)",
+                    path.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `O_NOFOLLOW` where its value is known (the lstat check in
+/// [`check_write_path`] covers the rest).
+pub fn no_follow(opts: &mut OpenOptions) -> &mut OpenOptions {
+    #[cfg(all(
+        target_os = "linux",
+        any(
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            target_arch = "riscv64"
+        )
+    ))]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(0o400_000);
+    }
+    #[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd"))]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(0x0100);
+    }
+    opts
+}
+
+/// Open `path` for appending (and reading), refusing symbolic links, creating
+/// it 0600, and tightening an existing file's mode to 0600.
+pub fn open_append(path: &Path) -> io::Result<File> {
+    check_write_path(path)?;
+    let f = open_private(
+        path,
+        no_follow(OpenOptions::new().read(true).append(true).create(true)),
+    )?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if f.metadata()?.permissions().mode() & 0o077 != 0 {
+            f.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
+    }
+    Ok(f)
+}
+
+/// `mkdir -p` with mode 0700 on every created directory, refusing to go
+/// through a symbolic link below the lab root.
 pub fn mkdir_private(path: &Path) -> io::Result<()> {
+    check_write_path(path)?;
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
@@ -42,6 +143,7 @@ fn open_private(path: &Path, opts: &mut OpenOptions) -> io::Result<File> {
 /// the same directory is written, synced and renamed over `path`. On any
 /// failure the temporary file is removed and `path` is untouched.
 pub fn write_private(path: &Path, data: &[u8]) -> io::Result<()> {
+    check_write_path(path)?;
     let dir = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -77,7 +179,7 @@ pub fn write_private(path: &Path, data: &[u8]) -> io::Result<()> {
 /// a crash leaves either the whole line or nothing (for lines under the
 /// filesystem's atomic append size, which every record here is).
 pub fn append_locked(path: &Path, line: &[u8]) -> io::Result<()> {
-    let mut f = open_private(path, OpenOptions::new().append(true).create(true))?;
+    let mut f = open_append(path)?;
     let locked = f.lock().is_ok();
     let written = f.write_all(line).and_then(|()| f.sync_data());
     if locked {
@@ -90,6 +192,7 @@ pub fn append_locked(path: &Path, line: &[u8]) -> io::Result<()> {
 /// returning the number of bytes copied. Used for evidence capture, where
 /// the copy is hashed afterwards and compared with the source hash.
 pub fn copy_private_new(src: &Path, dst: &Path) -> io::Result<u64> {
+    check_write_path(dst)?;
     let mut input = File::open(src)?;
     let mut out = open_private(dst, OpenOptions::new().write(true).create_new(true))?;
     let n = io::copy(&mut input, &mut out)?;
@@ -106,6 +209,47 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         mkdir_private(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn writes_refuse_symlinks_below_the_root_and_tighten_modes() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let root = tmpdir("confine");
+        let elsewhere = tmpdir("confine-elsewhere");
+        confine_writes(&root);
+        // A link two levels up from the file.
+        mkdir_private(&root.join("sessions")).unwrap();
+        symlink(&elsewhere, root.join("sessions/op")).unwrap();
+        let deep = root.join("sessions/op/evidence/x.ndjson");
+        let e = append_locked(&deep, b"{}\n").unwrap_err();
+        assert!(
+            e.to_string().contains("sessions/op is a symbolic link"),
+            "{e}"
+        );
+        assert!(mkdir_private(&root.join("sessions/op/evidence")).is_err());
+        assert!(write_private(&root.join("sessions/op/a.env"), b"x").is_err());
+        assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0);
+        // The file itself.
+        fs::write(elsewhere.join("t"), b"").unwrap();
+        symlink(elsewhere.join("t"), root.join("t.ndjson")).unwrap();
+        assert!(append_locked(&root.join("t.ndjson"), b"{}\n").is_err());
+        assert!(write_private(&root.join("t.ndjson"), b"{}\n").is_err());
+        assert_eq!(fs::read(elsewhere.join("t")).unwrap(), b"");
+        // An existing file with a loose mode is tightened on append.
+        let loose = root.join("loose.ndjson");
+        fs::write(&loose, b"").unwrap();
+        fs::set_permissions(&loose, fs::Permissions::from_mode(0o644)).unwrap();
+        append_locked(&loose, b"{}\n").unwrap();
+        assert_eq!(
+            fs::metadata(&loose).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        // The root itself may be a link.
+        let via = tmpdir("confine-via").join("root");
+        symlink(&root, &via).unwrap();
+        confine_writes(&via);
+        append_locked(&via.join("ok.ndjson"), b"{}\n").unwrap();
+        WRITE_ROOT.with(|r| *r.borrow_mut() = None);
     }
 
     #[test]

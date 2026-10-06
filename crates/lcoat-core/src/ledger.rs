@@ -350,14 +350,7 @@ impl Ledger {
         if let Some(dir) = self.path.parent() {
             mkdir_private(dir)?;
         }
-        let mut opts = std::fs::OpenOptions::new();
-        opts.read(true).append(true).create(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
-        let mut f = opts.open(&self.path)?;
+        let mut f = lcoat_format::fsutil::open_append(&self.path)?;
         f.lock()?;
         let result = (|| -> Result<()> {
             let prev = Self::head_hash(&self.path)?;

@@ -55,7 +55,8 @@ impl LabRoot {
     }
 
     /// Resolve for an explicit root (relative paths are made absolute
-    /// against the current directory, without resolving symlinks).
+    /// against the current directory, without resolving symlinks). Also
+    /// confines this thread's writes to it ([`lcoat_format::fsutil::confine_writes`]).
     pub fn at(root: &Path) -> Result<Self> {
         let root = if root.is_absolute() {
             root.to_path_buf()
@@ -97,6 +98,8 @@ impl LabRoot {
                 .cloned()
                 .unwrap_or_else(|| candidates[0].clone());
         }
+        // Writes below the root may not pass through a symbolic link.
+        lcoat_format::fsutil::confine_writes(&root);
         let atlas_state = state_dir.join("atlas");
         let active_file = atlas_state.join("active.env");
         Ok(Self {
