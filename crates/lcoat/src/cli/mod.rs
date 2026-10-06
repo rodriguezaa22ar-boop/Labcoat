@@ -250,7 +250,7 @@ pub fn mutable_root() -> std::result::Result<LabRoot, CliError> {
     Ok(r)
 }
 
-/// Scan a free-text argument into [`MetadataOnly`], refusing credentials
+/// Scan a free-text argument into [`MetadataOnly`](lcoat_core::metadata::MetadataOnly), refusing credentials
 /// and raw-content markers with the operator's flag named.
 pub fn metadata(
     flag: &str,
