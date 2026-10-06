@@ -572,6 +572,14 @@ impl Operation<AnyState> {
         if rec.get("MODE") != "operation" {
             fail!("invalid atlas operation record: {slug}");
         }
+        // Review 2026-10-05: the handle's slug came from the record, so a
+        // copied operation directory resumed (and half-mutated) the original.
+        let recorded = rec.get("SLUG");
+        if !recorded.is_empty() && recorded != slug {
+            fail!(
+                "refusing to load operation '{slug}': its {SESSION_FILE} records SLUG={recorded}, so it was copied or renamed from another operation, and every write would go to '{recorded}' instead; move the directory back to sessions/{recorded}, or start a new operation"
+            );
+        }
         let target = rec.get("TARGET").to_owned();
         let fallback = |key: &str| -> String {
             let v = rec.get(key);
@@ -583,7 +591,7 @@ impl Operation<AnyState> {
         };
         Ok(Self {
             name: rec.get("NAME").to_owned(),
-            slug: rec.get("SLUG").to_owned(),
+            slug: slug.clone(),
             target_address: fallback("TARGET_ADDRESS"),
             target_label: fallback("TARGET_LABEL"),
             target,
