@@ -668,9 +668,11 @@ fn valid_port(p: &str) -> bool {
 pub const BANNER_MAX: usize = 128;
 
 /// A service or product string chosen by the scanned host, made safe to
-/// print: control characters (C0, DEL, C1, line and paragraph separators)
-/// and invisible or bidirectional-override characters become `?`, and the
-/// result is cut to [`BANNER_MAX`] characters with a trailing `~`.
+/// print: control characters (C0, DEL, C1, line and paragraph separators),
+/// every Unicode format character (Cf: bidirectional overrides, zero-width
+/// characters, the soft hyphen, tag characters), variation selectors and
+/// noncharacters become `?`, and the result is cut to [`BANNER_MAX`]
+/// characters with a trailing `~`.
 pub fn banner(raw: &str) -> String {
     let mut out: String = raw
         .chars()
@@ -687,12 +689,38 @@ fn unsafe_char(c: char) -> bool {
     c.is_control()
         || matches!(
             c,
-            '\u{200b}'..='\u{200f}'
+            // General category Cf (Unicode 16), plus the line and paragraph
+            // separators.
+            '\u{ad}'
+                | '\u{600}'..='\u{605}'
+                | '\u{61c}'
+                | '\u{6dd}'
+                | '\u{70f}'
+                | '\u{890}'..='\u{891}'
+                | '\u{8e2}'
+                | '\u{180e}'
+                | '\u{200b}'..='\u{200f}'
                 | '\u{2028}'..='\u{202e}'
                 | '\u{2060}'..='\u{2064}'
-                | '\u{2066}'..='\u{2069}'
+                | '\u{2066}'..='\u{206f}'
                 | '\u{feff}'
+                | '\u{fff9}'..='\u{fffb}'
+                | '\u{110bd}'
+                | '\u{110cd}'
+                | '\u{13430}'..='\u{1343f}'
+                | '\u{1bca0}'..='\u{1bca3}'
+                | '\u{1d173}'..='\u{1d17a}'
+                | '\u{e0001}'
+                | '\u{e0020}'..='\u{e007f}'
+                // Variation selectors: invisible, and used to smuggle data.
+                | '\u{180b}'..='\u{180d}'
+                | '\u{180f}'
+                | '\u{fe00}'..='\u{fe0f}'
+                | '\u{e0100}'..='\u{e01ef}'
+                // Noncharacters.
+                | '\u{fdd0}'..='\u{fdef}'
         )
+        || (c as u32) & 0xfffe == 0xfffe
 }
 
 /// The value of `name="..."` in a tag head, with the five XML entities
@@ -878,6 +906,39 @@ mod tests {
 
     /// Found by fuzz target `nmap_xml`: the scanned host chooses these
     /// strings, and they used to reach the terminal unchanged.
+    /// Review 2026-10-05: the soft hyphen, Arabic and Mongolian format
+    /// characters, tag characters and variation selectors passed the
+    /// banner filter and could hide or smuggle text in a finding title.
+    #[test]
+    fn every_format_character_is_defanged() {
+        for c in [
+            '\u{ad}',
+            '\u{61c}',
+            '\u{180e}',
+            '\u{2064}',
+            '\u{206a}',
+            '\u{fff9}',
+            '\u{e0001}',
+            '\u{e0041}',
+            '\u{e007f}',
+            '\u{fe0f}',
+            '\u{e0100}',
+            '\u{fdd0}',
+            '\u{fffe}',
+            '\u{1fffe}',
+        ] {
+            assert_eq!(banner(&format!("ssh{c}d")), "ssh?d", "U+{:04X}", c as u32);
+        }
+        assert_eq!(
+            banner("OpenSSH 9.6p1 Ubuntu-3ubuntu13"),
+            "OpenSSH 9.6p1 Ubuntu-3ubuntu13"
+        );
+        assert_eq!(
+            banner("caf\u{e9} \u{65e5}\u{672c}"),
+            "caf\u{e9} \u{65e5}\u{672c}"
+        );
+    }
+
     #[test]
     fn hostile_xml_is_validated_and_banners_are_defanged() {
         let port = |proto: &str, id: &str, product: &str| {

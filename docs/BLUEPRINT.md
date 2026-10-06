@@ -83,7 +83,7 @@ Read-only commands take `&Operation<_>`; writing commands take `&mut`. The borro
 
 ## What Rust buys: invariants as types
 
-1. **Metadata only.** Packet and receipt writers accept only `MetadataOnly`, whose only constructor is the forbidden-content scanner.
+1. **Metadata only.** Packet and receipt writers accept only `MetadataOnly`, whose only constructor is the forbidden-content scanner. On write the scanner is stricter than the shell's patterns (`password:`, `scheme://user:pass@`, AWS key ids, JWTs, `github_pat_`, `glpat-`, `xox?-`, every `BEGIN … PRIVATE KEY`); the verify paths keep the shell's patterns exactly, so a record Rust writes passes every build and a record the shell or Lite wrote is not newly rejected.
 2. **In scope.** `AdapterRunner::run` takes a `ScopedTarget`, which only `Scope::preflight` can produce.
 3. **Lifecycle and packet order.** `Operation<Active>` / `Operation<Closed>` typestate; each packet constructor requires the previous packet by reference.
 4. **Tiers and arguments.** `Tier` is an enum; nmap arguments parse into `enum NmapArg`, so unknown flags fail to parse and positionals have no variant.
@@ -232,7 +232,7 @@ Thirteen targets, each a function in `crates/lcoat-fuzz/src/targets.rs` that fee
 
 | Target | Input | Invariants beyond "no panic, no hang" |
 | --- | --- | --- |
-| `nmap_xml` | `nmap -oX` from the network | ports are plain decimals in 1..=65535, protocol is one nmap writes, banners carry no control or bidi characters and are at most 128 characters, one bad byte cannot hide the other findings |
+| `nmap_xml` | `nmap -oX` from the network | ports are plain decimals in 1..=65535, protocol is one nmap writes, banners carry no control, format (Cf), variation-selector or noncharacter code points and are at most 128 characters, one bad byte cannot hide the other findings |
 | `nmap_args` | operator arguments | the argv passed to nmap re-parses to the same arguments; no file, spoofing or target flag survives; tier stays 1..=2 |
 | `script_args` | operator arguments | declared tier stays 1..=3; no empty command |
 | `json` | receipts, indexes | canonical, compact and pretty forms re-parse; canonical bytes are a fixed point and newline-free |
